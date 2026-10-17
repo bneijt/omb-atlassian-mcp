@@ -1,14 +1,15 @@
-//! Best-effort lookup of Chromium's "Safe Storage" password in the OS keyring.
+//! Linux: the Chromium "Safe Storage" password lives in the Secret Service.
 //!
-//! On Linux, Chromium-based browsers protect the AES key that encrypts cookie values
-//! with a password stored in the Secret Service (gnome-keyring, KWallet, ...). The
-//! password lives under the `application` attribute — for *every* Chromium-based
-//! browser on Linux, including Edge, that value is `chromium`.
+//! Chromium-based browsers on Linux protect the AES key behind a password stored in
+//! gnome-keyring or KWallet, under the `application` attribute — for *every* Chromium
+//! browser, including Edge, that value is `chromium`.
 //!
 //! When no keyring entry exists (headless machines, `--password-store=basic`), Chromium
-//! falls back to the hard-coded password `peanuts`. So this lookup is genuinely
+//! falls back to the hard-coded password `peanuts`. The lookup is therefore genuinely
 //! best-effort: failure is not an error, it just means fewer candidate keys.
 
+use super::Credentials;
+use crate::decrypt::{KEYRING_FALLBACK_PASSWORDS, LINUX_ITERATIONS, derive_key};
 use secret_service::{EncryptionType, SecretService};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -20,17 +21,41 @@ const SCHEMAS: [&str; 2] = [
     "chrome_libsecret_os_crypt_password_v1",
 ];
 
-/// `application` attribute values worth trying. Chromium-on-Linux uses `chromium`
-/// regardless of the vendor; the others are cheap insurance.
+/// `application` attribute values worth trying. Chromium uses `chromium` regardless of
+/// the vendor; the others are cheap insurance.
 const APPLICATIONS: [&str; 4] = ["chromium", "chrome", "Microsoft Edge", "microsoft-edge"];
 
 /// Cap the whole keyring probe: an unlocked keyring answers in milliseconds, while a
 /// locked one can pop a dialog and block forever.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The keys to try for this platform, plus where they came from.
+pub async fn credentials() -> (Credentials, String) {
+    let lookup = safe_storage_passwords().await;
+    let keys = keys_with(lookup.passwords());
+    let source = format!("OS keyring ({})", lookup.describe());
+    (Credentials::Cbc(keys), source)
+}
+
+/// Candidate keys for a set of keyring passwords: the keyring's own first, then the
+/// built-in fallbacks, deduplicated.
+pub fn keys_with(passwords: &[String]) -> Vec<[u8; 16]> {
+    let mut keys: Vec<[u8; 16]> = passwords
+        .iter()
+        .map(|password| derive_key(password, LINUX_ITERATIONS))
+        .collect();
+    for password in KEYRING_FALLBACK_PASSWORDS {
+        let key = derive_key(password, LINUX_ITERATIONS);
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
 /// Outcome of the keyring probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeyringLookup {
+enum KeyringLookup {
     /// Passwords recovered from the keyring (may be empty if no entry exists).
     Passwords(Vec<String>),
     /// The keyring could not be consulted; only the built-in fallbacks are available.
@@ -39,7 +64,7 @@ pub enum KeyringLookup {
 
 impl KeyringLookup {
     /// Human-readable summary for error messages.
-    pub fn describe(&self) -> String {
+    fn describe(&self) -> String {
         match self {
             Self::Passwords(p) if p.is_empty() => "no matching entry".to_string(),
             Self::Passwords(p) => format!("{} password(s) from the OS keyring", p.len()),
@@ -48,7 +73,7 @@ impl KeyringLookup {
     }
 
     /// The recovered passwords, if any.
-    pub fn passwords(&self) -> &[String] {
+    fn passwords(&self) -> &[String] {
         match self {
             Self::Passwords(p) => p,
             Self::Unavailable(_) => &[],
@@ -57,7 +82,7 @@ impl KeyringLookup {
 }
 
 /// Look up the Safe Storage password, giving up after [`PROBE_TIMEOUT`].
-pub async fn safe_storage_passwords() -> KeyringLookup {
+async fn safe_storage_passwords() -> KeyringLookup {
     match timeout(PROBE_TIMEOUT, lookup()).await {
         Ok(Ok(passwords)) => KeyringLookup::Passwords(passwords),
         Ok(Err(reason)) => KeyringLookup::Unavailable(reason),
@@ -76,9 +101,8 @@ async fn lookup() -> Result<Vec<String>, String> {
     let mut found: Vec<String> = Vec::new();
     for schema in SCHEMAS {
         for application in APPLICATIONS {
-            // Strict search first (schema + application), then a looser
-            // application-only search, which catches entries written by builds that
-            // used a different schema name.
+            // Strict search first (schema + application), then a looser application-only
+            // search, which catches entries written by builds that used another schema.
             for attributes in [
                 HashMap::from([("xdg:schema", schema), ("application", application)]),
                 HashMap::from([("application", application)]),
@@ -115,6 +139,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn built_in_fallbacks_are_always_available() {
+        let keys = keys_with(&[]);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], derive_key("peanuts", LINUX_ITERATIONS));
+        assert_eq!(keys[1], derive_key("", LINUX_ITERATIONS));
+    }
+
+    #[test]
+    fn keyring_passwords_come_first_and_are_not_duplicated() {
+        let keys = keys_with(&["keyring-secret".to_string(), "peanuts".to_string()]);
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[0], derive_key("keyring-secret", LINUX_ITERATIONS));
+        assert_eq!(keys[1], derive_key("peanuts", LINUX_ITERATIONS));
+        assert_eq!(keys[2], derive_key("", LINUX_ITERATIONS));
+    }
+
+    #[test]
     fn describe_covers_all_cases() {
         assert_eq!(
             KeyringLookup::Passwords(vec![]).describe(),
@@ -129,18 +170,10 @@ mod tests {
                 .describe()
                 .contains("no dbus")
         );
-    }
-
-    #[test]
-    fn unavailable_lookup_yields_no_passwords() {
         assert!(
             KeyringLookup::Unavailable("x".into())
                 .passwords()
                 .is_empty()
-        );
-        assert_eq!(
-            KeyringLookup::Passwords(vec!["k".into()]).passwords(),
-            ["k"]
         );
     }
 }

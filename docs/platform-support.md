@@ -1,9 +1,9 @@
 # Plan: macOS and Windows support
 
-> **Status: plan, one decision made.** Linux is the only supported platform today; nothing
-> here is implemented yet. Windows will support the `v10` cookie scheme **plus a manual
-> cookie fallback** for profiles that use app-bound (`v20`) encryption. `v20` decryption
-> itself is out of scope (see [Decisions](#decisions)).
+> **Status: implemented.** The server builds and runs on Linux, macOS and Windows, and
+> `--session-cookie-file` covers profiles whose cookies cannot be decrypted (Windows
+> app-bound `v20`). `v20` decryption itself remains out of scope (see
+> [Decisions](#decisions)).
 
 ## The short version
 
@@ -117,13 +117,13 @@ one lookup.
 
 ## Phases
 
-| Phase | Work | Effort |
+| Phase | Work | Status |
 | --- | --- | --- |
-| **0. Decouple** | Split `edge.rs`/`keyring.rs` into `browser/` as above; move `secret-service` behind a target dependency. **No behaviour change**, Linux tests stay green. | ~0.5 day |
-| **1. Cookie fallback** | `--session-cookie-file`, both formats, validation, redaction, Unix permission warning, tests. Useful on its own; no platform work. | ~0.5 day |
-| **2. macOS** | `paths.rs` macOS table; `macos.rs` Keychain + 1003-iteration CBC; known-answer test for the KDF; account/service fallbacks (`Microsoft Edge Safe Storage`, `Chromium Safe Storage`, `Chrome Safe Storage`). | ~1 day |
-| **3. Windows base** | `paths.rs` Windows table (`Network\Cookies` and legacy); `Local State` parsing; DPAPI unwrap; AES-GCM `v10`; legacy DPAPI-blob values; `v20` detected and rejected with a message naming `--session-cookie-file`. | ~1 day |
-| **4. CI + release** | CI matrix on `ubuntu-latest`, `macos-latest`, `windows-latest`; release assets for each. | ~0.5 day |
+| **0. Decouple** | Split `edge.rs`/`keyring.rs` into `browser/` as above; move `secret-service` behind a target dependency. **No behaviour change**, Linux tests stay green. | done |
+| **1. Cookie fallback** | `--session-cookie-file`, both formats, validation, redaction, Unix permission warning, tests. Useful on its own; no platform work. | done |
+| **2. macOS** | `paths.rs` macOS table; `macos.rs` Keychain + 1003-iteration CBC; known-answer test for the KDF; account/service fallbacks (`Microsoft Edge Safe Storage`, `Chromium Safe Storage`, `Chrome Safe Storage`). | done |
+| **3. Windows base** | `paths.rs` Windows table (`Network\Cookies` and legacy); `Local State` parsing; DPAPI unwrap; AES-GCM `v10`; legacy DPAPI-blob values; `v20` detected and rejected with a message naming `--session-cookie-file`. | done |
+| **4. CI + release** | CI matrix on `ubuntu-latest`, `macos-latest`, `windows-latest`; release assets for each. | done |
 
 ## Testing strategy
 
@@ -142,6 +142,16 @@ testable on Linux and leave only thin OS calls unverified locally.
 | End-to-end | `tests/stdio_server.rs` today points `XDG_CONFIG_HOME` at a synthetic profile. Change the harness to set `HOME`, `XDG_CONFIG_HOME` and `LOCALAPPDATA` all to the temp dir, and set the profile up in the platform's layout — then the same test runs on all three runners. |
 
 `--check` stays the user-facing smoke test on every platform.
+
+**Where each piece actually runs.** The path tables, the cookie-file parsing, the
+`Local State` parsing, the macOS key derivation and both ciphers are unit-tested on every
+host, so most of the logic is covered on a Linux development machine. Two things can only
+run on their own platform:
+
+- the DPAPI FFI, type-checked against `windows-sys` 0.61 but only *executed* by the Windows
+  CI job, which round-trips a value through `CryptProtectData` / `CryptUnprotectData`;
+- the macOS Keychain read, exercised only by the macOS CI job (the unit test that would
+  touch the real Keychain is skipped there).
 
 ## CI and release
 

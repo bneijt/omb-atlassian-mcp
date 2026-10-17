@@ -63,6 +63,12 @@ pub struct Args {
     #[arg(long, value_name = "PROFILE", default_value = "Default")]
     pub profile: String,
 
+    /// Supply the session cookie yourself instead of reading the Edge profile. The file
+    /// holds either a `Cookie:` header value or a JSON object of name/value pairs, and
+    /// must include cloud.session.token or tenant.session.token.
+    #[arg(long, value_name = "PATH")]
+    pub session_cookie_file: Option<std::path::PathBuf>,
+
     /// Verify the Edge session by calling /rest/api/3/myself, print the result, and exit.
     #[arg(long)]
     pub check: bool,

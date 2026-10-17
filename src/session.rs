@@ -1,14 +1,13 @@
-//! Turning an Edge profile into a usable Atlassian session.
+//! Turning an Edge profile — or a cookie file — into a usable Atlassian session.
 //!
 //! This is the only place that knows which cookies matter, and the only place a
-//! decrypted secret exists. The result is a `Cookie:` header value that lives in
-//! memory for the lifetime of the process.
+//! decrypted secret exists. The result is a `Cookie:` header value that lives in memory
+//! for the lifetime of the process.
 
 use crate::atlassian::Site;
-use crate::edge::{self, RawCookie};
-use crate::keyring::{self, KeyringLookup};
+use crate::browser::cookie_db::{self, RawCookie};
+use crate::browser::{Browser, Credentials};
 use crate::{Error, Result};
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The cookies that authenticate a browser session against Atlassian Cloud.
@@ -26,31 +25,44 @@ pub struct Session {
     pub cookie_names: Vec<String>,
 }
 
-/// Acquire a session from the named Edge profile.
+/// Acquire a session from the named Edge profile on this platform.
 pub async fn acquire(site: &Site, profile: &str) -> Result<Session> {
-    let db = edge::cookie_db_for(profile)?;
-    let lookup = keyring::safe_storage_passwords().await;
-    acquire_from_db(site, &db, profile, &lookup)
+    let browser = crate::browser::open(profile).await?;
+    from_browser(site, &browser, profile)
 }
 
-/// Acquire a session from a specific cookie database.
-///
-/// Split out from [`acquire`] so it can be tested without an Edge installation or a
-/// keyring.
-pub fn acquire_from_db(
-    site: &Site,
-    db: &Path,
-    profile: &str,
-    lookup: &KeyringLookup,
-) -> Result<Session> {
-    // Read a copy: Edge holds a lock on the live database while it runs.
-    let (_temp, copy) = edge::copy_cookie_db(db)?;
-    let rows = edge::read_cookies(&copy, &SESSION_COOKIE_NAMES)?;
+/// Acquire a session from an already-opened browser profile.
+pub fn from_browser(site: &Site, browser: &Browser, profile: &str) -> Result<Session> {
+    let rows = cookie_db::read_cookies(&browser.cookies_db, &SESSION_COOKIE_NAMES)?;
+    select(
+        site,
+        &rows,
+        profile,
+        &browser.credentials,
+        &browser.key_source,
+    )
+}
 
+/// Use a cookie supplied by hand instead of reading the browser profile.
+pub fn from_cookie_file(file: &crate::cookie_file::CookieFile) -> Session {
+    Session {
+        cookie_header: file.header.clone(),
+        cookie_names: file.names.clone(),
+    }
+}
+
+/// Pick the session cookies out of the database rows and turn them into a header.
+fn select(
+    site: &Site,
+    rows: &[RawCookie],
+    profile: &str,
+    credentials: &Credentials,
+    key_source: &str,
+) -> Result<Session> {
     let host = site.host().to_string();
     let matching: Vec<&RawCookie> = rows
         .iter()
-        .filter(|cookie| edge::host_matches(&cookie.host_key, &host))
+        .filter(|cookie| cookie_db::host_matches(&cookie.host_key, &host))
         .collect();
 
     if matching.is_empty() {
@@ -73,13 +85,13 @@ pub fn acquire_from_db(
     let mut live = Vec::new();
     let mut latest_expiry = None;
     for cookie in matching {
-        if edge::is_expired(cookie.expires_utc, now) {
+        if cookie_db::is_expired(cookie.expires_utc, now) {
             crate::log!(
                 "ignoring expired cookie {} for {}",
                 cookie.name,
                 cookie.host_key
             );
-            latest_expiry = edge::expires_at_unix(cookie.expires_utc)
+            latest_expiry = cookie_db::expires_at_unix(cookie.expires_utc)
                 .into_iter()
                 .chain(latest_expiry)
                 .max();
@@ -96,7 +108,6 @@ pub fn acquire_from_db(
         });
     }
 
-    let keys = keys_for(lookup);
     let mut values: Vec<(String, String)> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
 
@@ -108,11 +119,7 @@ pub fn acquire_from_db(
         let value = if !cookie.value.is_empty() {
             cookie.value.clone()
         } else {
-            match crate::decrypt::decrypt_cookie_value(
-                &cookie.encrypted_value,
-                &cookie.host_key,
-                &keys,
-            ) {
+            match credentials.decrypt(&cookie.encrypted_value, &cookie.host_key) {
                 Ok(value) => value,
                 Err(reason) => {
                     failures.push(format!("{} ({}): {reason}", cookie.name, cookie.host_key));
@@ -131,8 +138,7 @@ pub fn acquire_from_db(
         return Err(Error::Undecryptable {
             host,
             count: live.len(),
-            keys: keys.len(),
-            keyring: lookup.describe(),
+            key_source: key_source.to_string(),
             details: failures.join("; "),
         });
     }
@@ -166,48 +172,106 @@ pub fn acquire_from_db(
     })
 }
 
-/// Candidate AES keys, in the order they are tried.
-///
-/// Keyring-derived keys come first because when a keyring entry exists it is the one
-/// Chromium used; the built-in fallbacks only apply to `--password-store=basic` setups.
-pub fn keys_for(lookup: &KeyringLookup) -> Vec<[u8; 16]> {
-    let mut keys: Vec<[u8; 16]> = lookup
-        .passwords()
-        .iter()
-        .map(|password| crate::decrypt::derive_key(password, crate::decrypt::LINUX_ITERATIONS))
-        .collect();
-    for password in crate::decrypt::KEYRING_FALLBACK_PASSWORDS {
-        let key = crate::decrypt::derive_key(password, crate::decrypt::LINUX_ITERATIONS);
-        if !keys.contains(&key) {
-            keys.push(key);
-        }
-    }
-    keys
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::cookie_db::CHROMIUM_EPOCH_OFFSET_SECS;
 
-    #[test]
-    fn fallback_keys_are_always_available() {
-        let keys = keys_for(&KeyringLookup::Unavailable("no dbus".into()));
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0], crate::decrypt::derive_key("peanuts", 1));
-        assert_eq!(keys[1], crate::decrypt::derive_key("", 1));
+    fn site() -> Site {
+        Site::parse("https://acme.atlassian.net").unwrap()
+    }
+
+    /// A cookie with a plaintext value, so these tests need no crypto at all.
+    fn plain(host_key: &str, name: &str, value: &str) -> RawCookie {
+        RawCookie {
+            host_key: host_key.to_string(),
+            name: name.to_string(),
+            value: value.to_string(),
+            encrypted_value: Vec::new(),
+            path: "/".to_string(),
+            is_secure: true,
+            is_httponly: true,
+            expires_utc: 0,
+        }
+    }
+
+    /// A cookie whose value has to be decrypted; with no keys it cannot be.
+    fn encrypted_to(host_key: &str, name: &str) -> RawCookie {
+        RawCookie {
+            encrypted_value: b"v10\x00\x01\x02".to_vec(),
+            ..plain(host_key, name, "")
+        }
+    }
+
+    fn no_keys() -> Credentials {
+        Credentials::Cbc(Vec::new())
     }
 
     #[test]
-    fn keyring_passwords_come_first_and_are_not_duplicated() {
-        let keys = keys_for(&KeyringLookup::Passwords(vec![
-            "keyring-secret".to_string(),
-            "peanuts".to_string(),
-        ]));
-        // keyring-secret, then peanuts (from the keyring, deduplicated against the
-        // fallback), then the empty password.
-        assert_eq!(keys.len(), 3);
-        assert_eq!(keys[0], crate::decrypt::derive_key("keyring-secret", 1));
-        assert_eq!(keys[1], crate::decrypt::derive_key("peanuts", 1));
-        assert_eq!(keys[2], crate::decrypt::derive_key("", 1));
+    fn only_matching_session_cookies_reach_the_header() {
+        let rows = vec![
+            plain(".atlassian.net", "cloud.session.token", "cloud"),
+            plain("acme.atlassian.net", "tenant.session.token", "tenant"),
+            plain(".other.atlassian.net", "cloud.session.token", "other"),
+            plain("example.com", "cloud.session.token", "example"),
+            plain(".atlassian.net", "atlassian.xsrf.token", "xsrf"),
+        ];
+        let session = select(&site(), &rows, "Default", &no_keys(), "test").unwrap();
+        assert_eq!(
+            session.cookie_header,
+            "cloud.session.token=cloud; tenant.session.token=tenant"
+        );
+        assert_eq!(session.cookie_names, SESSION_COOKIE_NAMES);
+    }
+
+    #[test]
+    fn no_matching_cookie_is_reported_with_what_was_found() {
+        let rows = vec![plain("example.com", "cloud.session.token", "nope")];
+        let error = select(&site(), &rows, "Default", &no_keys(), "test").unwrap_err();
+        assert!(
+            matches!(error, Error::NoSessionCookie { .. }),
+            "got {error:?}"
+        );
+        assert!(error.to_string().contains("acme.atlassian.net"));
+    }
+
+    #[test]
+    fn expired_cookies_are_rejected() {
+        let mut expired = plain(".atlassian.net", "cloud.session.token", "cloud");
+        // 2001-01-01
+        expired.expires_utc = (978_307_200 + CHROMIUM_EPOCH_OFFSET_SECS) * 1_000_000;
+        let error = select(&site(), &[expired], "Default", &no_keys(), "test").unwrap_err();
+        assert!(
+            matches!(error, Error::SessionExpired { .. }),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn undecryptable_cookies_name_the_key_source() {
+        let rows = vec![encrypted_to(".atlassian.net", "cloud.session.token")];
+        let error = select(
+            &site(),
+            &rows,
+            "Default",
+            &no_keys(),
+            "OS keyring (no matching entry)",
+        )
+        .unwrap_err();
+        match &error {
+            Error::Undecryptable { key_source, .. } => {
+                assert!(key_source.contains("OS keyring"), "got {key_source:?}");
+            }
+            other => panic!("expected Undecryptable, got {other:?}"),
+        }
+        assert!(error.to_string().contains("OS keyring"));
+    }
+
+    #[test]
+    fn a_cookie_file_becomes_a_session_directly() {
+        let file = crate::cookie_file::parse("cloud.session.token=abc").unwrap();
+        let session = from_cookie_file(&file);
+        assert_eq!(session.cookie_header, "cloud.session.token=abc");
+        assert_eq!(session.cookie_names, ["cloud.session.token"]);
     }
 }

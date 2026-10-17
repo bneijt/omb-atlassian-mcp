@@ -1,12 +1,9 @@
 name: Release
 
-# Build and publish the server when a `v*` tag is pushed.
+# Build and publish the server when a `v*` tag is pushed: one asset per supported
+# platform, each with a sha256 checksum. Nothing is published unless the tests pass.
 #
-# There is deliberately no Windows or macOS job. This server reads the Edge cookie
-# database from a Chromium profile and gets its key from the Secret Service over
-# D-Bus; the keyring dependency only builds on Linux, and the platform is Linux-only
-# by design. To add a target later, add a matrix entry with its own `runs-on` and
-# `target`, and give each artifact a distinct name.
+# macOS ships a universal binary (arm64 + x86_64) so users do not have to pick.
 
 on:
   push:
@@ -19,12 +16,22 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BIN: omb-atlassian-mcp
-  ASSET: omb-atlassian-mcp-linux-x86_64
 
 jobs:
-  release:
-    name: Release (linux-x86_64)
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: omb-atlassian-mcp-linux-x86_64
+          - os: macos-latest
+            asset: omb-atlassian-mcp-macos-universal
+          - os: windows-latest
+            asset: omb-atlassian-mcp-windows-x86_64.exe
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,27 +42,68 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-      - name: Build
-        run: cargo build --release --locked
-
-      - name: Prepare assets
+      - name: Build and stage
+        shell: bash
         run: |
           set -euo pipefail
-          echo "built: $(./target/release/$BIN --version)"
           mkdir -p staging
-          install -m 0755 "target/release/$BIN" "staging/$ASSET"
-          (cd staging && sha256sum "$ASSET" > "$ASSET.sha256")
-          ls -l staging
+          case "${{ matrix.os }}" in
+            macos-latest)
+              # Both slices, then fused into one universal binary.
+              rustup target add aarch64-apple-darwin x86_64-apple-darwin
+              cargo build --release --locked --target aarch64-apple-darwin
+              cargo build --release --locked --target x86_64-apple-darwin
+              lipo -create -output "staging/${{ matrix.asset }}" \
+                "target/aarch64-apple-darwin/release/$BIN" \
+                "target/x86_64-apple-darwin/release/$BIN"
+              ;;
+            windows-latest)
+              cargo build --release --locked
+              cp "target/release/$BIN.exe" "staging/${{ matrix.asset }}"
+              ;;
+            *)
+              cargo build --release --locked
+              cp "target/release/$BIN" "staging/${{ matrix.asset }}"
+              ;;
+          esac
+
+          chmod +x "staging/${{ matrix.asset }}" || true
+          # Smoke-test the artifact we are about to publish.
+          "staging/${{ matrix.asset }}" --version
+
+          cd staging
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            # macOS runners have shasum, not necessarily sha256sum.
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+          ls -l
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: omb-atlassian-mcp-linux-x86_64
+          name: ${{ matrix.asset }}
           path: staging/
           if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # Flatten the per-asset artifact directories into one folder.
+          merge-multiple: true
+
+      - name: Show what will be published
+        run: ls -lR dist
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: staging/*
+          files: dist/*
           fail_on_unmatched_files: true

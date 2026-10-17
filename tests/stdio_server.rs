@@ -7,144 +7,16 @@
 mod common;
 
 use common::*;
-use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
-use std::time::Duration;
+use serde_json::json;
 
-/// MCP framing over stdio is one JSON-RPC message per line.
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(90);
-
-const BIN: &str = env!("CARGO_BIN_EXE_omb-atlassian-mcp");
-
-struct Harness {
-    child: Child,
-    stdin: ChildStdin,
-    lines: Receiver<String>,
-}
-
-impl Harness {
-    /// Start the server with `XDG_CONFIG_HOME` pointed at a synthetic Edge profile.
-    fn start(config_home: &Path, extra_args: &[&str]) -> Self {
-        let mut child = Command::new(BIN)
-            .arg("--site")
-            .arg(SITE_URL)
-            .args(extra_args)
-            .env("XDG_CONFIG_HOME", config_home)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn the server");
-
-        let stdin = child.stdin.take().expect("stdin");
-        let stdout = child.stdout.take().expect("stdout");
-
-        // Read stdout on a thread so a missing response surfaces as a timeout instead
-        // of hanging the test run forever.
-        let (sender, lines) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(line) => {
-                        if sender.send(line).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        Self {
-            child,
-            stdin,
-            lines,
-        }
-    }
-
-    fn send(&mut self, message: &Value) {
-        writeln!(self.stdin, "{message}").expect("write to the server");
-        self.stdin.flush().expect("flush");
-    }
-
-    fn receive(&self) -> Value {
-        match self.lines.recv_timeout(RESPONSE_TIMEOUT) {
-            Ok(line) => serde_json::from_str(&line)
-                .unwrap_or_else(|e| panic!("stdout must carry only JSON-RPC, got {line:?}: {e}")),
-            Err(RecvTimeoutError::Timeout) => {
-                panic!("no response within {RESPONSE_TIMEOUT:?}")
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                panic!(
-                    "the server closed stdout without answering; it most likely exited with an error"
-                )
-            }
-        }
-    }
-
-    fn call(&mut self, message: &Value) -> Value {
-        self.send(message);
-        self.receive()
-    }
-
-    /// Complete the MCP handshake and return the `initialize` result.
-    fn initialize(&mut self) -> Value {
-        let response = self.call(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": { "name": "omb-atlassian-mcp-tests", "version": "0" }
-            }
-        }));
-        assert_eq!(response["id"], 1);
-        assert!(
-            response.get("error").is_none(),
-            "initialize failed: {response}"
-        );
-        self.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-        response["result"].clone()
-    }
-}
-
-impl Drop for Harness {
-    fn drop(&mut self) {
-        // Closing stdin ends the transport, which should end the server.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn profile_dir() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_edge_profile(dir.path(), "Default", &session_cookies("peanuts"));
-    dir
-}
-
-/// Run the binary to completion and return (exit code, stdout, stderr).
-fn run_to_completion(config_home: &Path, args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(BIN)
-        .args(args)
-        .env("XDG_CONFIG_HOME", config_home)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run the server");
-    (
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
-    )
+fn profile_dir() -> TestEnv {
+    TestEnv::with_cookies("Default", &session_cookies("peanuts"))
 }
 
 #[test]
 fn serves_the_handshake_and_exposes_only_read_only_tools() {
     let profile = profile_dir();
-    let mut server = Harness::start(profile.path(), &[]);
+    let mut server = Harness::start(&profile, &[]);
 
     let initialized = server.initialize();
     assert_eq!(initialized["serverInfo"]["name"], "omb-atlassian-mcp");
@@ -214,7 +86,7 @@ fn serves_the_handshake_and_exposes_only_read_only_tools() {
 #[test]
 fn a_tool_call_comes_back_as_a_structured_tool_result() {
     let profile = profile_dir();
-    let mut server = Harness::start(profile.path(), &[]);
+    let mut server = Harness::start(&profile, &[]);
     server.initialize();
 
     // `get_myself` reaches the real Atlassian endpoint with the synthetic cookie, so
@@ -246,7 +118,7 @@ fn a_tool_call_comes_back_as_a_structured_tool_result() {
 #[test]
 fn an_unknown_tool_is_rejected_without_touching_the_network() {
     let profile = profile_dir();
-    let mut server = Harness::start(profile.path(), &[]);
+    let mut server = Harness::start(&profile, &[]);
     server.initialize();
 
     let response = server.call(&json!({
@@ -265,8 +137,8 @@ fn an_unknown_tool_is_rejected_without_touching_the_network() {
 
 #[test]
 fn exits_with_a_clear_message_when_no_edge_profile_exists() {
-    let empty = tempfile::tempdir().unwrap();
-    let (code, stdout, stderr) = run_to_completion(empty.path(), &["--site", SITE_URL]);
+    let empty = TestEnv::empty("Default");
+    let (code, stdout, stderr) = run_to_completion(&empty, &["--site", SITE_URL]);
 
     assert_eq!(code, 1, "stderr: {stderr}");
     assert!(
@@ -277,15 +149,13 @@ fn exits_with_a_clear_message_when_no_edge_profile_exists() {
         stderr.contains("no Microsoft Edge cookie database found"),
         "got: {stderr}"
     );
-    // The message tells the user where it looked.
-    assert!(stderr.contains("microsoft-edge"), "got: {stderr}");
+    // The message tells the user where it looked (the platform's own root).
+    assert!(stderr.contains("Cookies"), "got: {stderr}");
 }
 
 #[test]
 fn exits_with_a_clear_message_when_the_profile_has_no_session_cookie() {
-    let config = tempfile::tempdir().unwrap();
-    write_edge_profile(
-        config.path(),
+    let config = TestEnv::with_cookies(
         "Default",
         &[TestCookie::plain(
             ".example.com",
@@ -294,30 +164,20 @@ fn exits_with_a_clear_message_when_the_profile_has_no_session_cookie() {
         )],
     );
 
-    let (code, stdout, stderr) = run_to_completion(config.path(), &["--site", SITE_URL]);
+    let (code, stdout, stderr) = run_to_completion(&config, &["--site", SITE_URL]);
     assert_eq!(code, 1, "stderr: {stderr}");
     assert!(stdout.is_empty(), "got: {stdout:?}");
     assert!(stderr.contains("no Edge session cookie"), "got: {stderr}");
     assert!(stderr.contains("acme.atlassian.net"), "got: {stderr}");
 }
 
-fn listed_tool_names(server: &mut Harness) -> Vec<String> {
-    let listed = server.call(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
-    listed["result"]["tools"]
-        .as_array()
-        .expect("a tools array")
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
-        .collect()
-}
-
 #[test]
 fn each_access_level_exposes_a_different_tool_surface() {
     let profile = profile_dir();
     for (level, expected) in [("read", 10), ("update", 22), ("write", 33), ("full", 37)] {
-        let mut server = Harness::start(profile.path(), &["--access-level", level]);
+        let mut server = Harness::start(&profile, &["--access-level", level]);
         server.initialize();
-        let names = listed_tool_names(&mut server);
+        let names = server.visible_tools();
 
         assert_eq!(
             names.len(),
@@ -358,7 +218,7 @@ fn each_access_level_exposes_a_different_tool_surface() {
 fn a_tool_above_the_level_cannot_be_called_even_by_name() {
     // Default level is `read`, so create_issue is not registered at all.
     let profile = profile_dir();
-    let mut server = Harness::start(profile.path(), &[]);
+    let mut server = Harness::start(&profile, &[]);
     server.initialize();
 
     let response = server.call(&json!({
@@ -381,7 +241,7 @@ fn a_tool_above_the_level_cannot_be_called_even_by_name() {
 fn refuses_to_send_the_session_cookie_to_a_non_atlassian_host() {
     let profile = profile_dir();
     let (code, stdout, stderr) =
-        run_to_completion(profile.path(), &["--site", "https://evil.example.com"]);
+        run_to_completion(&profile, &["--site", "https://evil.example.com"]);
 
     assert_eq!(code, 1);
     assert!(stdout.is_empty(), "got: {stdout:?}");
@@ -396,8 +256,7 @@ fn reports_that_the_session_is_valid_via_check() {
     // `--check` calls the real endpoint with a synthetic cookie, so it must fail with
     // an Atlassian HTTP error rather than succeeding — proving it really called out.
     let profile = profile_dir();
-    let (code, _stdout, stderr) =
-        run_to_completion(profile.path(), &["--site", SITE_URL, "--check"]);
+    let (code, _stdout, stderr) = run_to_completion(&profile, &["--site", SITE_URL, "--check"]);
 
     assert_eq!(code, 1, "stderr: {stderr}");
     assert!(

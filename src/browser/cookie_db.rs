@@ -1,11 +1,8 @@
-//! Discovery and reading of the Microsoft Edge cookie database (Linux).
+//! Reading the Edge cookie database.
 //!
-//! Edge is Chromium-based, so its profile layout and cookie schema match Chrome's:
-//! a SQLite database named `Cookies` inside a profile directory such as `Default` or
-//! `Profile 2`.
-//!
-//! Edge keeps the live database locked while it runs, so callers should read a copy
-//! ([`copy_cookie_db`]) rather than the original.
+//! Edge is Chromium-based, so its schema matches Chrome's: a SQLite database named
+//! `Cookies` inside a profile directory. Edge keeps the live database locked while it
+//! runs, so callers read a copy.
 
 use crate::{Error, Result};
 use rusqlite::{Connection, OpenFlags, params_from_iter};
@@ -15,17 +12,6 @@ use std::path::{Path, PathBuf};
 /// Chromium's epoch (1601-01-01) in Unix seconds; cookie expiry is stored as
 /// microseconds since this moment.
 pub const CHROMIUM_EPOCH_OFFSET_SECS: i64 = 11_644_473_600;
-
-/// Directory names used by the stable/beta/dev/nightly Edge packages on Linux.
-pub const EDGE_CHANNELS: [&str; 4] = [
-    "microsoft-edge",
-    "microsoft-edge-beta",
-    "microsoft-edge-dev",
-    "microsoft-edge-nightly",
-];
-
-/// Flatpak installs live under `~/.var/app/<id>/config`.
-const FLATPAK_APP_ID: &str = "com.microsoft.Edge";
 
 /// A row of Edge's `cookies` table, before decryption.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,56 +34,6 @@ impl RawCookie {
     pub fn has_value(&self) -> bool {
         !self.value.is_empty() || !self.encrypted_value.is_empty()
     }
-}
-
-/// Every Edge profile root that could exist for this user.
-///
-/// Covers the native packages and the Flatpak install, in all four release channels.
-pub fn profile_roots() -> Result<Vec<PathBuf>> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::CookieDb {
-            path: "$HOME".to_string(),
-            reason: "HOME is not set, cannot locate the Edge profile".to_string(),
-        })?;
-    let config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    Ok(profile_roots_from(config_home.as_deref(), &home))
-}
-
-/// Pure version of [`profile_roots`], for tests.
-pub fn profile_roots_from(config_home: Option<&Path>, home: &Path) -> Vec<PathBuf> {
-    let config = config_home
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| home.join(".config"));
-    let mut roots = Vec::new();
-    for channel in EDGE_CHANNELS {
-        roots.push(config.join(channel));
-        roots.push(
-            home.join(".var/app")
-                .join(FLATPAK_APP_ID)
-                .join("config")
-                .join(channel),
-        );
-    }
-    roots
-}
-
-/// Locate the cookie database for `profile` in the standard Edge locations.
-pub fn cookie_db_for(profile: &str) -> Result<PathBuf> {
-    cookie_db_in(&profile_roots()?, profile)
-}
-
-/// Locate the cookie database for `profile` under the given roots.
-pub fn cookie_db_in(roots: &[PathBuf], profile: &str) -> Result<PathBuf> {
-    let mut searched = Vec::new();
-    for root in roots {
-        let candidate = root.join(profile).join("Cookies");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        searched.push(candidate.display().to_string());
-    }
-    Err(Error::ProfileNotFound { searched })
 }
 
 /// Append a suffix to a path's final component (`Cookies` -> `Cookies-wal`).
@@ -234,24 +170,6 @@ pub fn is_expired(expires_utc: i64, now_unix: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn roots_cover_channels_and_flatpak() {
-        let roots = profile_roots_from(None, Path::new("/home/u"));
-        assert!(roots.contains(&PathBuf::from("/home/u/.config/microsoft-edge")));
-        assert!(roots.contains(&PathBuf::from("/home/u/.config/microsoft-edge-beta")));
-        assert!(roots.contains(&PathBuf::from(
-            "/home/u/.var/app/com.microsoft.Edge/config/microsoft-edge"
-        )));
-        assert_eq!(roots.len(), EDGE_CHANNELS.len() * 2);
-    }
-
-    #[test]
-    fn xdg_config_home_overrides_dot_config() {
-        let roots = profile_roots_from(Some(Path::new("/cfg")), Path::new("/home/u"));
-        assert!(roots.contains(&PathBuf::from("/cfg/microsoft-edge")));
-        assert!(!roots.contains(&PathBuf::from("/home/u/.config/microsoft-edge")));
-    }
 
     #[test]
     fn domain_matching_follows_rfc6265() {

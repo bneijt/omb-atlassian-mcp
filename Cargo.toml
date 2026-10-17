@@ -17,10 +17,20 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 url = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tempfile = "3"
+thiserror = "2"
+# Chromium cookie ciphers: AES-128-CBC (Linux, macOS) and AES-256-GCM (Windows).
 aes = "0.8"
 cbc = "0.1"
+aes-gcm = "0.10"
+base64 = "0.22"
 pbkdf2 = "0.12"
 sha1 = "0.10"
 sha2 = "0.10"
+
+# The Secret Service (D-Bus) lookup only exists on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
-thiserror = "2"
+
+# DPAPI, for the Windows "Safe Storage" key in `Local State`.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

@@ -25,6 +25,7 @@ omb-atlassian-mcp --site https://<your-org>.atlassian.net [--access-level <LEVEL
 | `--site <URL>` | *required* | Your Atlassian Cloud site. Must be `https://<something>.atlassian.net`. |
 | `--access-level <LEVEL>` | `read` | `read`, `update`, `write`, or `full`. See below. |
 | `--profile <NAME>` | `Default` | Which Edge profile to read cookies from. |
+| `--session-cookie-file <PATH>` | off | Supply the cookie yourself instead of reading Edge. See [below](#when-the-browser-cannot-supply-the-cookie). |
 | `--check` | off | Verify the session against Atlassian, print the identity, and exit. |
 
 `--access-level` defaults to the least-privilege level, so you must opt in explicitly to
@@ -74,26 +75,59 @@ not appear in `tools/list` at all.
 
 ### 1. Authentication via the Edge session cookie
 
-Scope: **Linux**, **Atlassian Cloud** (`*.atlassian.net`) only.
+Scope: **Linux, macOS and Windows**, Atlassian Cloud (`*.atlassian.net`) only.
 
-1. Locate the Edge profile's cookie database, `~/.config/microsoft-edge{,-beta,-dev,-nightly}/<profile>/Cookies`
-   (also the Flatpak location under `~/.var/app/com.microsoft.Edge/`), defaulting to the
-   `Default` profile. Edge stores it as an ordinary SQLite database.
+1. Locate the Edge profile's cookie database, defaulting to the `Default` profile:
+
+   | | Cookie database |
+   | --- | --- |
+   | Linux | `~/.config/microsoft-edge{,-beta,-dev,-nightly}/<profile>/Cookies` (and the Flatpak tree) |
+   | macOS | `~/Library/Application Support/Microsoft Edge{ Beta,Dev,Canary}/<profile>/Cookies` |
+   | Windows | `%LOCALAPPDATA%\Microsoft\Edge{ Beta,Dev,SxS}\User Data\<profile>\{Network\,}Cookies` |
+
+   Edge stores it as an ordinary SQLite database.
 2. Copy the database (plus its `-wal`/`-shm` sidecars) to a private temporary directory,
    because Edge holds a lock on the original while it runs.
 3. Select the Cloud session cookies whose domain covers `--site`: `cloud.session.token` and
    `tenant.session.token`, then drop any that Edge has already expired.
 4. Decrypt them:
-   - key = `PBKDF2-HMAC-SHA1(password, "saltysalt", 1 iteration)`, 16 bytes;
-   - password from the OS keyring (Secret Service / KWallet), falling back to Chromium's
-     built-in `peanuts` password — which is what `--password-store=basic` uses;
-   - AES-128-CBC, IV = sixteen spaces, PKCS#7 padding, `v10`/`v11` value tag;
-   - strip the leading `SHA256(host_key)` that cookie database v24+ prepends.
+
+   | | Key | Cipher |
+   | --- | --- | --- |
+   | Linux | PBKDF2-HMAC-SHA1 over the Secret Service / KWallet password, 1 iteration | AES-128-CBC, IV = 16 spaces, `v10`/`v11` |
+   | macOS | PBKDF2-HMAC-SHA1 over the login Keychain password (`Microsoft Edge Safe Storage`), **1003** iterations | same |
+   | Windows | DPAPI unwraps the 32-byte key in `Local State` | AES-256-**GCM**, `v10` |
+
+   Both schemes strip the leading `SHA256(host_key)` that cookie database v24+ prepends.
+   If no key is available, Chromium's built-in `peanuts` password (`--password-store=basic`)
+   is tried too.
 5. Send the cookies as a `Cookie` header. They are never written to disk, never logged, and
    the temp copy is deleted as soon as the values are read.
 
 No browser automation (no Playwright/Selenium): the browser is only the *source* of the
 cookie, and all Atlassian traffic is plain HTTP from this process.
+
+#### When the browser cannot supply the cookie
+
+Recent Edge on Windows encrypts cookies with *app-bound* (`v20`) encryption, whose key
+requires Administrator rights and Edge's own elevation service. That is deliberately not
+implemented. Instead, pass the cookie yourself:
+
+```sh
+omb-atlassian-mcp --site https://<org>.atlassian.net --session-cookie-file ~/.atlassian-cookie
+```
+
+The file holds either a raw `Cookie:` header value or a JSON object, and must include
+`cloud.session.token` (or `tenant.session.token`):
+
+```text
+cloud.session.token=…; tenant.session.token=…
+```
+
+Get the value from Edge: DevTools → Application → Cookies → your site → copy
+`cloud.session.token`. The file is a bearer credential: it is read once, never logged, and
+on Unix the server warns if it is readable by other users (`chmod 600` it).
+
 
 ### 2. Access-level enforcement
 
@@ -161,15 +195,18 @@ an object is passed through as ADF.
   printed.
 - Expired or revoked sessions surface as a clear error asking you to sign in to Atlassian in
   Edge again — there is no silent retry loop.
-- The OS keyring may prompt to unlock. The lookup is best-effort with a 5-second cap and
-  falls back to the built-in key, so a locked keyring degrades rather than hangs.
+- The OS keyring (Linux) or login Keychain (macOS) may prompt to unlock. The lookup is
+  best-effort with a timeout and falls back to the built-in key, so a locked keyring
+  degrades rather than hangs.
+- `--session-cookie-file` holds a bearer credential. It is read once, never logged, and on
+  Unix the server warns if other users can read it.
 - SSO, MFA and CAPTCHA challenges stay in Edge's court; this tool cannot and will not solve
   them.
 
 ## Building and testing
 
-Requires a Rust toolchain (edition 2024, i.e. Rust 1.85+), Edge installed and signed in to
-Atlassian, and — only for the keyring path — a running Secret Service.
+Requires a Rust toolchain (edition 2024, i.e. Rust 1.85+) and, for automatic cookie
+extraction, Edge installed and signed in to Atlassian.
 
 ```sh
 cargo build --release
@@ -178,15 +215,22 @@ cargo run -- --site https://<your-org>.atlassian.net --check
 ```
 
 The test suite needs neither Edge nor an Atlassian account: it writes a synthetic,
-Chromium-shaped cookie database (including the real `SHA256(host_key)` value prefix), checks
-decryption round-trips and known-answer vectors for the key derivation, drives the real
-binary over stdio through a full MCP handshake at every access level, and compares the
-enforced endpoint policy against [docs/access-levels.md](docs/access-levels.md) row by row.
+Chromium-shaped cookie profile in the platform's own layout (including the real
+`SHA256(host_key)` value prefix), checks decryption round-trips and known-answer vectors for
+both the CBC and GCM schemes, drives the real binary over stdio through a full MCP handshake
+at every access level, exercises `--session-cookie-file`, and compares the enforced endpoint
+policy against [docs/access-levels.md](docs/access-levels.md) row by row.
+
+CI runs the suite on Linux, macOS and Windows, because the platform-specific key-retrieval
+paths cannot be exercised anywhere else. See [docs/platform-support.md](docs/platform-support.md)
+for the per-platform mechanics and what is deliberately not implemented.
 
 ## Decisions
 
-1. **Platform** — Linux only. Other platforms fail with a clear error rather than a partial
-   implementation.
+1. **Platforms** — Linux, macOS and Windows. Windows Edge may encrypt cookies with
+   app-bound (`v20`) encryption, which needs Administrator rights; that is deliberately not
+   implemented, and `--session-cookie-file` is the supported answer (see
+   [docs/platform-support.md](docs/platform-support.md)).
 2. **Deployment** — Atlassian Cloud only. Data Center/Server (`JSESSIONID`) is out of scope.
 3. **Base URL** — passed explicitly via `--site`; never auto-detected from the Edge profile.
 4. **MCP SDK** — the official `rmcp` crate, with `stdio` as the only transport.

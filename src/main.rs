@@ -1,11 +1,11 @@
-//! Entry point: acquire the Edge session, then serve MCP over stdio.
+//! Entry point: acquire the session cookie, then serve MCP over stdio.
 
 use clap::Parser;
 use omb_atlassian_mcp::{
     Error,
     atlassian::{Client, JIRA_MYSELF, Site},
     cli::Args,
-    log, session,
+    cookie_file, log, session,
     tools::AtlassianServer,
 };
 use rmcp::ServiceExt;
@@ -24,14 +24,31 @@ async fn run(args: Args) -> omb_atlassian_mcp::Result<()> {
     let level = args.access_level;
     let site = Site::parse(&args.site)?;
 
-    let session = session::acquire(&site, &args.profile).await?;
-    log!(
-        "using the Edge session for {} ({} cookie(s): {}), access level {}",
-        site.host(),
-        session.cookie_names.len(),
-        session.cookie_names.join(", "),
-        level
-    );
+    // A cookie file wins over the browser profile: it is an explicit choice, and it is
+    // the only option when the profile's cookies cannot be decrypted (Windows v20).
+    let session = match &args.session_cookie_file {
+        Some(path) => {
+            let file = cookie_file::read(path)?;
+            log!(
+                "using the supplied cookie file {} ({} cookie(s): {})",
+                path.display(),
+                file.names.len(),
+                file.names.join(", ")
+            );
+            session::from_cookie_file(&file)
+        }
+        None => {
+            let session = session::acquire(&site, &args.profile).await?;
+            log!(
+                "using the Edge session for {} ({} cookie(s): {})",
+                site.host(),
+                session.cookie_names.len(),
+                session.cookie_names.join(", ")
+            );
+            session
+        }
+    };
+    log!("access level '{level}'");
 
     let client = Client::new(site, level, session.cookie_header)?;
 

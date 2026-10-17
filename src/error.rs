@@ -31,15 +31,26 @@ pub enum Error {
 
     #[error(
         "found {count} session cookie(s) for {host} but none could be decrypted \
-         (tried {keys} key(s); OS keyring: {keyring}). Details: {details}"
+         (key source: {key_source}). Details: {details}"
     )]
     Undecryptable {
         host: String,
         count: usize,
-        keys: usize,
-        keyring: String,
+        key_source: String,
         details: String,
     },
+
+    #[error("could not find {what} (looked in: {})", .searched.join(", "))]
+    NotFound { what: String, searched: Vec<String> },
+
+    #[error(
+        "could not use the cookie file {path}: {reason}. The file must contain a `Cookie:` \
+         header value or a JSON object with cloud.session.token / tenant.session.token"
+    )]
+    CookieFile { path: String, reason: String },
+
+    #[error("this platform is not supported; build for Linux, macOS or Windows")]
+    UnsupportedPlatform,
 
     #[error(
         "the Edge session cookie for {host} expired at {expired_at}; \
