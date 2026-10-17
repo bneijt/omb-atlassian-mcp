@@ -167,25 +167,27 @@ mod tests {
         }
     }
 
-    fn strings(paths: Vec<PathBuf>) -> Vec<String> {
-        paths.iter().map(|p| p.display().to_string()).collect()
+    /// Build the path a test expects, with this platform's separators.
+    ///
+    /// Comparing `PathBuf`s rather than `display()` strings keeps the assertions
+    /// platform-independent: `Path` equality is defined over components, so `/a/b` and
+    /// `\\a\\b` are the same path on Windows.
+    fn expected(path: &str) -> PathBuf {
+        PathBuf::from(path)
     }
 
     #[test]
     fn linux_paths_cover_channels_and_flatpak() {
-        let candidates = strings(cookie_candidates(Os::Linux, &homes(), "Default"));
-        assert!(candidates.contains(&"/home/u/.config/microsoft-edge/Default/Cookies".to_string()));
-        assert!(
-            candidates.contains(&"/home/u/.config/microsoft-edge-beta/Default/Cookies".to_string())
-        );
-        assert!(
-            candidates.contains(
-                &"/home/u/.var/app/com.microsoft.Edge/config/microsoft-edge/Default/Cookies"
-                    .to_string()
-            )
-        );
+        let candidates = cookie_candidates(Os::Linux, &homes(), "Default");
+        assert!(candidates.contains(&expected("/home/u/.config/microsoft-edge/Default/Cookies")));
+        assert!(candidates.contains(&expected(
+            "/home/u/.config/microsoft-edge-beta/Default/Cookies"
+        )));
+        assert!(candidates.contains(&expected(
+            "/home/u/.var/app/com.microsoft.Edge/config/microsoft-edge/Default/Cookies"
+        )));
         // Linux has no `Network` subdirectory.
-        assert!(!candidates.iter().any(|c| c.contains("/Network/")));
+        assert!(!candidates.iter().any(|c| c.ends_with("Network/Cookies")));
     }
 
     #[test]
@@ -194,66 +196,62 @@ mod tests {
             config_home: Some(PathBuf::from("/cfg")),
             ..homes()
         };
-        let candidates = strings(cookie_candidates(Os::Linux, &homes, "Default"));
-        assert!(candidates.contains(&"/cfg/microsoft-edge/Default/Cookies".to_string()));
+        let candidates = cookie_candidates(Os::Linux, &homes, "Default");
+        assert!(candidates.contains(&expected("/cfg/microsoft-edge/Default/Cookies")));
         assert!(!candidates.iter().any(|c| c.starts_with("/home/u/.config")));
     }
 
     #[test]
     fn macos_paths_use_application_support() {
-        let candidates = strings(cookie_candidates(Os::MacOs, &homes(), "Default"));
-        assert!(candidates.contains(
-            &"/home/u/Library/Application Support/Microsoft Edge/Default/Cookies".to_string()
-        ));
-        assert!(
-            candidates.contains(
-                &"/home/u/Library/Application Support/Microsoft Edge Canary/Default/Cookies"
-                    .to_string()
-            )
-        );
+        let candidates = cookie_candidates(Os::MacOs, &homes(), "Default");
+        assert!(candidates.contains(&expected(
+            "/home/u/Library/Application Support/Microsoft Edge/Default/Cookies"
+        )));
+        assert!(candidates.contains(&expected(
+            "/home/u/Library/Application Support/Microsoft Edge Canary/Default/Cookies"
+        )));
     }
 
     #[test]
     fn windows_paths_prefer_network_and_cover_both_layouts() {
-        let candidates = strings(cookie_candidates(Os::Windows, &homes(), "Default"));
-        assert!(candidates.contains(
-            &"/local/appdata/Microsoft/Edge/User Data/Default/Network/Cookies".to_string()
-        ));
-        assert!(
-            candidates
-                .contains(&"/local/appdata/Microsoft/Edge/User Data/Default/Cookies".to_string())
-        );
+        let candidates = cookie_candidates(Os::Windows, &homes(), "Default");
+        assert!(candidates.contains(&expected(
+            "/local/appdata/Microsoft/Edge/User Data/Default/Network/Cookies"
+        )));
+        assert!(candidates.contains(&expected(
+            "/local/appdata/Microsoft/Edge/User Data/Default/Cookies"
+        )));
         // `Network/Cookies` must be tried before the legacy path.
         let network = candidates
             .iter()
-            .position(|c| c.ends_with("/Network/Cookies"))
+            .position(|c| c.ends_with("Network/Cookies"))
             .unwrap();
         let legacy = candidates
             .iter()
-            .position(|c| c.ends_with("/User Data/Default/Cookies"))
+            .position(|c| c.ends_with("User Data/Default/Cookies"))
             .unwrap();
         assert!(network < legacy);
     }
 
     #[test]
     fn windows_channels_match_the_edge_install_names() {
-        let candidates = strings(cookie_candidates(Os::Windows, &homes(), "Profile 2"));
-        assert!(candidates.contains(
-            &"/local/appdata/Microsoft/Edge Beta/User Data/Profile 2/Network/Cookies".to_string()
-        ));
-        assert!(candidates.contains(
-            &"/local/appdata/Microsoft/Edge SxS/User Data/Profile 2/Network/Cookies".to_string()
-        ));
+        let candidates = cookie_candidates(Os::Windows, &homes(), "Profile 2");
+        assert!(candidates.contains(&expected(
+            "/local/appdata/Microsoft/Edge Beta/User Data/Profile 2/Network/Cookies"
+        )));
+        assert!(candidates.contains(&expected(
+            "/local/appdata/Microsoft/Edge SxS/User Data/Profile 2/Network/Cookies"
+        )));
     }
 
     #[test]
     fn local_state_sits_at_each_root() {
-        let linux = strings(local_state_candidates(Os::Linux, &homes()));
-        assert!(linux.contains(&"/home/u/.config/microsoft-edge/Local State".to_string()));
-        let windows = strings(local_state_candidates(Os::Windows, &homes()));
-        assert!(
-            windows.contains(&"/local/appdata/Microsoft/Edge/User Data/Local State".to_string())
-        );
+        let linux = local_state_candidates(Os::Linux, &homes());
+        assert!(linux.contains(&expected("/home/u/.config/microsoft-edge/Local State")));
+        let windows = local_state_candidates(Os::Windows, &homes());
+        assert!(windows.contains(&expected(
+            "/local/appdata/Microsoft/Edge/User Data/Local State"
+        )));
     }
 
     #[test]
