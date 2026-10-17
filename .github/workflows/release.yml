@@ -1,67 +1,61 @@
 name: Release
 
+# Build and publish the server when a `v*` tag is pushed.
+#
+# There is deliberately no Windows or macOS job. This server reads the Edge cookie
+# database from a Chromium profile and gets its key from the Secret Service over
+# D-Bus; the keyring dependency only builds on Linux, and the platform is Linux-only
+# by design. To add a target later, add a matrix entry with its own `runs-on` and
+# `target`, and give each artifact a distinct name.
+
 on:
   push:
     tags:
-      - 'v*' # Trigger on version tags, e.g., v1.0.0
+      - 'v*' # e.g. v0.1.0
+
+permissions:
+  contents: write # create the release and upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: omb-atlassian-mcp
+  ASSET: omb-atlassian-mcp-linux-x86_64
 
 jobs:
-  build:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            bin_name: my-cli-linux
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            bin_name: my-cli-windows.exe
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            bin_name: my-cli-macos
-
+  release:
+    name: Release (linux-x86_64)
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Test
+        run: cargo test --locked
 
-      - name: Prepare artifact
-        shell: bash
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Prepare assets
         run: |
+          set -euo pipefail
+          echo "built: $(./target/release/$BIN --version)"
           mkdir -p staging
-          # Copy binary and rename appropriately
-          cp target/${{ matrix.target }}/release/my-cli* staging/${{ matrix.bin_name }}
+          install -m 0755 "target/release/$BIN" "staging/$ASSET"
+          (cd staging && sha256sum "$ASSET" > "$ASSET.sha256")
+          ls -l staging
 
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-artifact-${{ matrix.target }}
+          name: omb-atlassian-mcp-linux-x86_64
           path: staging/
+          if-no-files-found: error
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # Required to create GitHub Releases and upload assets
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          merge-storage: true # Collects files from all matrix jobs into 'dist/'
-
-      - name: Publish GitHub Release
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*
+          files: staging/*
+          fail_on_unmatched_files: true
