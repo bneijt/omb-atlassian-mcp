@@ -6,7 +6,7 @@ use omb_atlassian_mcp::{
     atlassian::{Client, JIRA_MYSELF, Site},
     cli::Args,
     log, session,
-    tools::{AtlassianServer, TOOL_SPECS},
+    tools::AtlassianServer,
 };
 use rmcp::ServiceExt;
 
@@ -20,9 +20,8 @@ async fn main() {
 }
 
 async fn run(args: Args) -> omb_atlassian_mcp::Result<()> {
-    // Reject levels that are declared but not built before touching anything else, so
-    // an unsupported --access-level can never widen what the agent may do.
-    let level = args.access_level.ensure_implemented()?;
+    // Every level is implemented; `--access-level` decides how far the agent may go.
+    let level = args.access_level;
     let site = Site::parse(&args.site)?;
 
     let session = session::acquire(&site, &args.profile).await?;
@@ -48,7 +47,10 @@ async fn run(args: Args) -> omb_atlassian_mcp::Result<()> {
     }
 
     let server = AtlassianServer::new(client, level);
-    log!("serving {} read-only tools over stdio", TOOL_SPECS.len());
+    log!(
+        "serving {} tool(s) at access level '{level}' over stdio",
+        server.visible_tool_names().len()
+    );
 
     let running = server
         .serve(rmcp::transport::stdio())

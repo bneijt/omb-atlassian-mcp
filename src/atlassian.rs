@@ -1,15 +1,14 @@
-//! The Atlassian Cloud HTTP client, including the read-only endpoint allowlist.
+//! The Atlassian Cloud HTTP client.
 //!
-//! Two independent things keep this server read-only:
-//!
-//! 1. Only read tools are registered (see [`crate::tools`]).
-//! 2. Every request must match [`READONLY_ENDPOINTS`], and the match is on the
-//!    *endpoint*, not just the verb — Jira's JQL search is a `POST` that reads.
+//! Every request is checked against [`crate::policy`] before it is sent. The policy names,
+//! for each endpoint, the lowest access level allowed to call it; matching is by whole
+//! path segments, and anything the policy does not name is refused at every level.
 //!
 //! Tool arguments are percent-encoded into single path segments
 //! ([`path_segment`]), so a tool argument can never escape the endpoint it belongs to.
 
 use crate::cli::AccessLevel;
+use crate::policy;
 use crate::{Error, Result};
 use serde_json::Value;
 use std::time::Duration;
@@ -24,8 +23,8 @@ const MAX_ERROR_BODY: usize = 600;
 /// How long to wait on Atlassian before giving up.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-// Endpoints used by the read tools. Kept as constants so the allowlist and the tools
-// cannot drift apart silently.
+// Paths used by the tools, kept as constants so the tools and the policy cannot drift
+// apart silently.
 pub const JIRA_MYSELF: &str = "/rest/api/3/myself";
 pub const JIRA_ISSUE_PREFIX: &str = "/rest/api/3/issue/";
 pub const JIRA_PROJECT_SEARCH: &str = "/rest/api/3/project/search";
@@ -34,69 +33,6 @@ pub const JIRA_SEARCH_LEGACY: &str = "/rest/api/3/search";
 pub const CONFLUENCE_SEARCH: &str = "/wiki/rest/api/search";
 pub const CONFLUENCE_PAGES: &str = "/wiki/api/v2/pages";
 pub const CONFLUENCE_SPACES: &str = "/wiki/api/v2/spaces";
-
-/// One entry of the allowlist: a method and a path prefix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Endpoint {
-    pub method: &'static str,
-    pub prefix: &'static str,
-}
-
-/// Everything the `readonly` level may call.
-///
-/// The two `POST`s are read-only searches: Jira's `/search/jql` (the endpoint that
-/// replaced the removed `/search`, which is kept as a fallback for sites that predate
-/// the migration) and nothing else.
-pub const READONLY_ENDPOINTS: &[Endpoint] = &[
-    // Identity
-    Endpoint {
-        method: "GET",
-        prefix: JIRA_MYSELF,
-    },
-    // Jira reads. `JIRA_ISSUE_PREFIX` covers /issue/{key} and /issue/{key}/comment.
-    Endpoint {
-        method: "GET",
-        prefix: JIRA_ISSUE_PREFIX,
-    },
-    Endpoint {
-        method: "GET",
-        prefix: JIRA_PROJECT_SEARCH,
-    },
-    // Jira JQL search: a POST that only reads.
-    Endpoint {
-        method: "POST",
-        prefix: JIRA_SEARCH_JQL,
-    },
-    Endpoint {
-        method: "POST",
-        prefix: JIRA_SEARCH_LEGACY,
-    },
-    // Confluence reads: v1 CQL search, v2 pages (children/footer-comments included),
-    // v2 spaces.
-    Endpoint {
-        method: "GET",
-        prefix: CONFLUENCE_SEARCH,
-    },
-    Endpoint {
-        method: "GET",
-        prefix: CONFLUENCE_PAGES,
-    },
-    Endpoint {
-        method: "GET",
-        prefix: CONFLUENCE_SPACES,
-    },
-];
-
-/// The allowlist for an access level.
-///
-/// Levels that are not built yet produce an error rather than a wider or narrower
-/// allowlist, so a mistake in argument handling cannot silently change the policy.
-pub fn allowed_endpoints(level: AccessLevel) -> Result<&'static [Endpoint]> {
-    match level {
-        AccessLevel::Readonly => Ok(READONLY_ENDPOINTS),
-        other => Err(Error::UnimplementedLevel(other)),
-    }
-}
 
 /// A validated Atlassian Cloud site URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,22 +116,10 @@ pub fn path_segment(value: &str) -> String {
     out
 }
 
-/// Whether `path` is covered by `prefix`, respecting segment boundaries so that
-/// `/rest/api/3/issue/` cannot be satisfied by `/rest/api/3/issue-evil`.
-fn path_matches(path: &str, prefix: &str) -> bool {
-    if path == prefix {
-        return true;
-    }
-    match path.strip_prefix(prefix) {
-        Some(rest) => prefix.ends_with('/') || rest.starts_with('/') || rest.starts_with('?'),
-        None => false,
-    }
-}
-
 /// Whether the path contains a `.` or `..` segment.
 ///
-/// Checked before the allowlist match, because the allowlist sees the raw path while a
-/// URL parser (or the server) may resolve dot-segments afterwards. Rejecting them here
+/// Checked before the policy match, because the policy sees the raw path while a URL
+/// parser (or the server) may resolve dot-segments afterwards. Rejecting them here
 /// means the path that was checked is the path that gets sent. No tool ever produces
 /// one: [`path_segment`] percent-encodes `.`.
 fn has_dot_segment(path: &str) -> bool {
@@ -219,14 +143,12 @@ pub struct Client {
     http: reqwest::Client,
     site: Site,
     level: AccessLevel,
-    endpoints: &'static [Endpoint],
     cookie_header: String,
 }
 
 impl Client {
     /// Build a client for `site` at `level`, authenticating with `cookie_header`.
     pub fn new(site: Site, level: AccessLevel, cookie_header: String) -> Result<Self> {
-        let endpoints = allowed_endpoints(level)?;
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(REQUEST_TIMEOUT)
@@ -239,7 +161,6 @@ impl Client {
             http,
             site,
             level,
-            endpoints,
             cookie_header,
         })
     }
@@ -252,22 +173,38 @@ impl Client {
         self.level
     }
 
-    /// Refuse anything outside the allowlist for this access level.
+    /// Refuse anything the policy does not permit at this session's level.
+    ///
+    /// The three refusals are deliberately distinguishable, because they mean different
+    /// things to the user: an endpoint that would work at a higher level is a
+    /// configuration choice, while an unlisted or `never` endpoint is not available at
+    /// all.
     pub fn check_allowed(&self, method: &str, path: &str) -> Result<()> {
-        let allowed = !has_dot_segment(path)
-            && self
-                .endpoints
-                .iter()
-                .any(|endpoint| endpoint.method == method && path_matches(path, endpoint.prefix));
-        if allowed {
-            Ok(())
-        } else {
-            Err(Error::Blocked {
-                level: self.level,
-                method: method.to_string(),
-                path: path.to_string(),
-            })
+        if !has_dot_segment(path) {
+            if policy::is_forbidden(method, path) {
+                return Err(Error::Forbidden {
+                    method: method.to_string(),
+                    path: path.to_string(),
+                });
+            }
+            if let Some(entry) = policy::policy_for(method, path) {
+                return if self.level >= entry.level {
+                    Ok(())
+                } else {
+                    Err(Error::RequiresLevel {
+                        session: self.level,
+                        required: entry.level,
+                        method: method.to_string(),
+                        path: path.to_string(),
+                    })
+                };
+            }
         }
+        Err(Error::Blocked {
+            level: self.level,
+            method: method.to_string(),
+            path: path.to_string(),
+        })
     }
 
     /// `GET path` and decode the JSON body.
@@ -279,6 +216,27 @@ impl Client {
     pub async fn post_json(&self, path: &str, body: &Value) -> Result<Value> {
         self.send(reqwest::Method::POST, path, &[], Some(body))
             .await
+    }
+
+    /// `POST path` with query parameters and a JSON body.
+    pub async fn post_json_with_query(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        body: &Value,
+    ) -> Result<Value> {
+        self.send(reqwest::Method::POST, path, query, Some(body))
+            .await
+    }
+
+    /// `PUT path` with a JSON body and decode the JSON response.
+    pub async fn put_json(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send(reqwest::Method::PUT, path, &[], Some(body)).await
+    }
+
+    /// `DELETE path` and decode the JSON response, if any.
+    pub async fn delete_json(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        self.send(reqwest::Method::DELETE, path, query, None).await
     }
 
     async fn send(
@@ -345,7 +303,7 @@ mod tests {
     fn client() -> Client {
         Client::new(
             Site::parse("https://acme.atlassian.net").unwrap(),
-            AccessLevel::Readonly,
+            AccessLevel::Read,
             "cloud.session.token=x".to_string(),
         )
         .unwrap()
@@ -444,82 +402,136 @@ mod tests {
         }
     }
 
-    #[test]
-    fn readonly_allows_the_read_endpoints() {
-        let client = client();
-        for (method, path) in [
-            ("GET", JIRA_MYSELF),
-            ("GET", "/rest/api/3/issue/ABC-1"),
-            ("GET", "/rest/api/3/issue/ABC-1/comment"),
-            ("GET", JIRA_PROJECT_SEARCH),
-            ("POST", JIRA_SEARCH_JQL),
-            ("POST", JIRA_SEARCH_LEGACY),
-            ("GET", CONFLUENCE_SEARCH),
-            ("GET", "/wiki/api/v2/pages/123"),
-            ("GET", "/wiki/api/v2/pages/123/children"),
-            ("GET", "/wiki/api/v2/pages/123/footer-comments"),
-            ("GET", CONFLUENCE_SPACES),
-        ] {
-            assert!(
-                client.check_allowed(method, path).is_ok(),
-                "{method} {path} should be allowed"
-            );
-        }
+    fn client_at(level: AccessLevel) -> Client {
+        Client::new(
+            Site::parse("https://acme.atlassian.net").unwrap(),
+            level,
+            "cloud.session.token=x".to_string(),
+        )
+        .unwrap()
     }
 
-    #[test]
-    fn readonly_blocks_writes_and_unknown_endpoints() {
-        let client = client();
-        for (method, path) in [
-            // write verbs on things we may read
-            ("PUT", "/rest/api/3/issue/ABC-1"),
-            ("DELETE", "/rest/api/3/issue/ABC-1"),
-            ("POST", "/rest/api/3/issue/ABC-1"),
-            ("POST", "/wiki/api/v2/pages"),
-            ("PUT", "/wiki/api/v2/pages/123"),
-            ("DELETE", "/wiki/api/v2/pages/123"),
-            ("POST", "/wiki/rest/api/content"),
-            // endpoints we never use
-            ("GET", "/rest/api/3/user/search"),
-            ("GET", "/rest/api/3/configuration"),
-            ("GET", "/wiki/api/v2/blogposts"),
-            ("GET", "/admin"),
-            // prefix boundary traps
-            ("GET", "/rest/api/3/issue-evil"),
-            ("GET", "/wiki/api/v2/pagesX"),
-            ("GET", "/rest/api/3/myself/../../admin"),
-        ] {
-            let error = client
-                .check_allowed(method, path)
-                .expect_err("this request should be blocked by the read-only allowlist");
-            assert!(
-                matches!(error, Error::Blocked { .. }),
-                "{method} {path} produced {error:?}"
-            );
-        }
-    }
+    const LEVELS: [AccessLevel; 4] = [
+        AccessLevel::Read,
+        AccessLevel::Update,
+        AccessLevel::Write,
+        AccessLevel::Full,
+    ];
 
     #[test]
-    fn the_only_posts_in_the_readonly_allowlist_are_searches() {
-        for endpoint in READONLY_ENDPOINTS {
-            match endpoint.method {
-                "GET" => {}
-                "POST" => assert!(
-                    endpoint.prefix.ends_with("/search")
-                        || endpoint.prefix.ends_with("/search/jql"),
-                    "unexpected POST endpoint in the read-only allowlist: {}",
-                    endpoint.prefix
-                ),
-                other => panic!("unexpected method {other} in the read-only allowlist"),
+    fn each_level_allows_exactly_what_the_ladder_says() {
+        // (method, path, lowest level that may call it)
+        let cases = [
+            ("GET", "/rest/api/3/issue/ABC-1", AccessLevel::Read),
+            ("POST", "/rest/api/3/search/jql", AccessLevel::Read),
+            ("GET", "/wiki/api/v2/pages/123", AccessLevel::Read),
+            ("PUT", "/rest/api/3/issue/ABC-1", AccessLevel::Update),
+            (
+                "POST",
+                "/rest/api/3/issue/ABC-1/transitions",
+                AccessLevel::Update,
+            ),
+            ("PUT", "/wiki/api/v2/pages/123", AccessLevel::Update),
+            ("POST", "/rest/api/3/issue", AccessLevel::Write),
+            ("DELETE", "/rest/api/3/issue/ABC-1", AccessLevel::Write),
+            ("DELETE", "/wiki/api/v2/pages/123", AccessLevel::Write),
+            ("POST", "/rest/api/3/user", AccessLevel::Full),
+            ("POST", "/wiki/api/v2/spaces", AccessLevel::Full),
+        ];
+
+        for (method, path, required) in cases {
+            for level in LEVELS {
+                let result = client_at(level).check_allowed(method, path);
+                if level >= required {
+                    assert!(
+                        result.is_ok(),
+                        "{method} {path} at '{level}' should be allowed, got {result:?}"
+                    );
+                } else {
+                    match result.expect_err("should be refused") {
+                        Error::RequiresLevel {
+                            required: needed, ..
+                        } => assert_eq!(
+                            needed, required,
+                            "{method} {path} at '{level}' named the wrong requirement"
+                        ),
+                        other => panic!("{method} {path} at '{level}' gave {other:?}"),
+                    }
+                }
             }
         }
     }
 
     #[test]
-    fn unimplemented_levels_have_no_allowlist() {
-        assert!(allowed_endpoints(AccessLevel::Readonly).is_ok());
-        assert!(allowed_endpoints(AccessLevel::Full).is_err());
-        assert!(allowed_endpoints(AccessLevel::ReadUpdate).is_err());
+    fn unlisted_endpoints_are_blocked_at_every_level() {
+        for level in LEVELS {
+            for (method, path) in [
+                ("GET", "/rest/api/3/configuration"),
+                ("POST", "/wiki/rest/api/content"),
+                ("PUT", "/rest/api/3/user"),
+                ("GET", "/admin"),
+                ("PATCH", "/rest/api/3/issue/ABC-1"),
+            ] {
+                let error = client_at(level)
+                    .check_allowed(method, path)
+                    .expect_err("not on the allowlist");
+                assert!(
+                    matches!(error, Error::Blocked { .. }),
+                    "{method} {path} at '{level}' produced {error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn never_endpoints_are_forbidden_at_every_level() {
+        for level in LEVELS {
+            let error = client_at(level)
+                .check_allowed("POST", "/wiki/api/v2/pages/123/redact")
+                .expect_err("redaction is never allowed");
+            assert!(
+                matches!(error, Error::Forbidden { .. }),
+                "'{level}' produced {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parent_path_does_not_imply_its_sub_resources() {
+        // Segment matching, not prefix matching: each of these differs from an
+        // allowlisted pattern by at least one whole segment.
+        let client = client_at(AccessLevel::Full);
+        for (method, path) in [
+            ("POST", "/rest/api/3/issue/ABC-1"), // no such endpoint; create is POST /issue
+            ("GET", "/rest/api/3/issue/ABC-1/"), // trailing slash is an empty segment
+            ("GET", "/rest/api/3/myself/extra"), // one segment too many
+            ("PUT", "/rest/api/3/issue"),        // one segment too few
+        ] {
+            assert!(
+                client.check_allowed(method, path).is_err(),
+                "{method} {path} must not be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_only_posts_at_read_level_are_known_read_operations() {
+        // Every POST at read level must be justified here. A new one has to be added
+        // deliberately, so a mutating POST cannot slip into the read level unnoticed.
+        const READ_ONLY_POSTS: [&str; 3] = [
+            "/rest/api/3/search",
+            "/rest/api/3/search/jql",
+            "/rest/api/3/jql/parse",
+        ];
+        for entry in crate::policy::ENDPOINT_POLICY {
+            if entry.level == AccessLevel::Read && entry.method == "POST" {
+                assert!(
+                    READ_ONLY_POSTS.contains(&entry.pattern),
+                    "unexpected POST at read level: {}",
+                    entry.pattern
+                );
+            }
+        }
     }
 
     #[test]

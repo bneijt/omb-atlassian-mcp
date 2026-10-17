@@ -5,41 +5,44 @@ use std::fmt;
 
 /// How much the agent is allowed to do on your behalf.
 ///
-/// The ordering of the variants is meaningful: `Readonly < ReadUpdate < Full`.
+/// The ordering of the variants is meaningful: `Read < Update < Write < Full`, and each
+/// level is cumulative — every level includes everything the level below it allows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum AccessLevel {
-    /// Read everything the signed-in user can read. No writes of any kind.
-    Readonly,
-    /// `readonly` plus modifying existing content. Not implemented yet.
-    ReadUpdate,
-    /// Unrestricted create/delete/administer. Not implemented yet.
+    /// Read everything the signed-in user can read. No changes of any kind.
+    Read,
+    /// `read`, plus changing content that already exists — rewriting an issue or a page,
+    /// transitioning, assigning, editing a comment or a property. Cannot create or
+    /// delete anything. Not implemented yet.
+    Update,
+    /// `update`, plus creating and deleting content — issues, pages, blog posts,
+    /// comments, attachments, sprints. Not implemented yet.
+    Write,
+    /// `write`, plus administration: users and profiles, permissions, security and
+    /// project/space configuration. Not implemented yet.
     Full,
 }
 
 impl fmt::Display for AccessLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Readonly => "readonly",
-            Self::ReadUpdate => "read-update",
+            Self::Read => "read",
+            Self::Update => "update",
+            Self::Write => "write",
             Self::Full => "full",
         })
     }
 }
 
 impl AccessLevel {
-    /// Whether this level has actually been built.
-    pub fn is_implemented(self) -> bool {
-        matches!(self, Self::Readonly)
+    /// Whether this level may change existing content (but not create or delete it).
+    pub fn can_update(self) -> bool {
+        self >= Self::Update
     }
 
-    /// Reject levels that are declared but not built, rather than silently
-    /// downgrading (or, worse, upgrading) the agent's reach.
-    pub fn ensure_implemented(self) -> crate::Result<Self> {
-        if self.is_implemented() {
-            Ok(self)
-        } else {
-            Err(crate::Error::UnimplementedLevel(self))
-        }
+    /// Whether this level may create or delete content.
+    pub fn can_write(self) -> bool {
+        self >= Self::Write
     }
 }
 
@@ -53,7 +56,7 @@ pub struct Args {
     pub site: String,
 
     /// Maximum access the agent may use.
-    #[arg(long, value_enum, default_value_t = AccessLevel::Readonly)]
+    #[arg(long, value_enum, default_value_t = AccessLevel::Read)]
     pub access_level: AccessLevel,
 
     /// Edge profile directory name inside the Edge configuration directory.
@@ -70,36 +73,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn readonly_is_the_default() {
+    fn read_is_the_default() {
         let args = Args::parse_from(["omb-atlassian-mcp", "--site", "https://x.atlassian.net"]);
-        assert_eq!(args.access_level, AccessLevel::Readonly);
+        assert_eq!(args.access_level, AccessLevel::Read);
         assert_eq!(args.profile, "Default");
         assert!(!args.check);
     }
 
+    /// The names on the command line are part of the interface; lock them down.
     #[test]
-    fn access_levels_are_accepted_and_ordered() {
+    fn every_level_has_the_expected_cli_name() {
+        for (name, expected) in [
+            ("read", AccessLevel::Read),
+            ("update", AccessLevel::Update),
+            ("write", AccessLevel::Write),
+            ("full", AccessLevel::Full),
+        ] {
+            let args = Args::parse_from([
+                "omb-atlassian-mcp",
+                "--site",
+                "https://x.atlassian.net",
+                "--access-level",
+                name,
+            ]);
+            assert_eq!(args.access_level, expected, "CLI name {name:?}");
+            assert_eq!(expected.to_string(), name, "Display for {name:?}");
+        }
+    }
+
+    #[test]
+    fn levels_are_ordered_from_read_to_full() {
+        assert!(AccessLevel::Read < AccessLevel::Update);
+        assert!(AccessLevel::Update < AccessLevel::Write);
+        assert!(AccessLevel::Write < AccessLevel::Full);
+
+        assert!(!AccessLevel::Read.can_update());
+        assert!(AccessLevel::Update.can_update());
+        assert!(AccessLevel::Write.can_update());
+        assert!(AccessLevel::Full.can_update());
+
+        assert!(!AccessLevel::Update.can_write());
+        assert!(AccessLevel::Write.can_write());
+        assert!(AccessLevel::Full.can_write());
+    }
+
+    #[test]
+    fn update_is_accepted_from_the_command_line() {
         let args = Args::parse_from([
             "omb-atlassian-mcp",
             "--site",
             "https://x.atlassian.net",
             "--access-level",
-            "read-update",
+            "update",
             "--profile",
             "Profile 2",
         ]);
-        assert_eq!(args.access_level, AccessLevel::ReadUpdate);
+        assert_eq!(args.access_level, AccessLevel::Update);
         assert_eq!(args.profile, "Profile 2");
-
-        assert!(AccessLevel::Readonly < AccessLevel::ReadUpdate);
-        assert!(AccessLevel::ReadUpdate < AccessLevel::Full);
-    }
-
-    #[test]
-    fn unimplemented_levels_are_rejected() {
-        assert!(AccessLevel::Readonly.ensure_implemented().is_ok());
-        assert!(AccessLevel::ReadUpdate.ensure_implemented().is_err());
-        assert!(AccessLevel::Full.ensure_implemented().is_err());
     }
 
     #[test]

@@ -301,25 +301,76 @@ fn exits_with_a_clear_message_when_the_profile_has_no_session_cookie() {
     assert!(stderr.contains("acme.atlassian.net"), "got: {stderr}");
 }
 
+fn listed_tool_names(server: &mut Harness) -> Vec<String> {
+    let listed = server.call(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
+    listed["result"]["tools"]
+        .as_array()
+        .expect("a tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
 #[test]
-fn refuses_access_levels_that_are_not_implemented() {
-    // Deliberately point at an empty config dir: the level must be rejected *before*
-    // the profile is even looked at, so an unknown level can never widen access.
-    let empty = tempfile::tempdir().unwrap();
-    for level in ["read-update", "full"] {
-        let (code, stdout, stderr) =
-            run_to_completion(empty.path(), &["--site", SITE_URL, "--access-level", level]);
-        assert_eq!(code, 1, "level {level} should be refused");
-        assert!(stdout.is_empty(), "got: {stdout:?}");
-        assert!(
-            stderr.contains("is not implemented yet"),
-            "level {level} produced: {stderr}"
+fn each_access_level_exposes_a_different_tool_surface() {
+    let profile = profile_dir();
+    for (level, expected) in [("read", 10), ("update", 15), ("write", 21), ("full", 25)] {
+        let mut server = Harness::start(profile.path(), &["--access-level", level]);
+        server.initialize();
+        let names = listed_tool_names(&mut server);
+
+        assert_eq!(
+            names.len(),
+            expected,
+            "level {level} saw {} tools: {names:?}",
+            names.len()
         );
-        assert!(
-            !stderr.contains("cookie database"),
-            "level {level} was checked after the profile: {stderr}"
-        );
+
+        // The boundary that matters at each level: the next tier up is invisible.
+        let has = |name: &str| names.iter().any(|n| n == name);
+        match level {
+            "read" => {
+                assert!(has("get_issue"));
+                assert!(!has("update_issue"));
+            }
+            "update" => {
+                assert!(has("update_issue"));
+                assert!(!has("create_issue"));
+            }
+            "write" => {
+                assert!(has("create_issue"));
+                assert!(!has("create_project"));
+            }
+            "full" => {
+                assert!(has("create_project"));
+                assert!(has("remove_group_member"));
+            }
+            _ => unreachable!(),
+        }
     }
+}
+
+#[test]
+fn a_tool_above_the_level_cannot_be_called_even_by_name() {
+    // Default level is `read`, so create_issue is not registered at all.
+    let profile = profile_dir();
+    let mut server = Harness::start(profile.path(), &[]);
+    server.initialize();
+
+    let response = server.call(&json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "create_issue",
+            "arguments": { "project_key": "ABC", "issue_type": "Task", "summary": "nope" }
+        }
+    }));
+
+    assert!(
+        response.get("error").is_some(),
+        "a tool above the session's level must be rejected: {response}"
+    );
 }
 
 #[test]

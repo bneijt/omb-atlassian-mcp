@@ -10,8 +10,9 @@ session cookie that already exists in your **Microsoft Edge** profile and replay
 Atlassian Cloud. If you are logged into Atlassian in Edge, the agent inherits exactly the
 access you have, and nothing more.
 
-> **Status: `readonly` is implemented.** `read-update` and `full` are accepted by the CLI
-> but refused at startup, so an unimplemented level can never widen what the agent may do.
+> **Status: all four access levels are implemented.** What the agent may do is bounded by
+> `--access-level`, and every endpoint the server can call is classified in
+> [docs/access-levels.md](docs/access-levels.md).
 
 ## Usage
 
@@ -22,7 +23,7 @@ omb-atlassian-mcp --site https://<your-org>.atlassian.net [--access-level <LEVEL
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--site <URL>` | *required* | Your Atlassian Cloud site. Must be `https://<something>.atlassian.net`. |
-| `--access-level <LEVEL>` | `readonly` | `readonly`, `read-update`, or `full`. Only `readonly` is implemented. |
+| `--access-level <LEVEL>` | `read` | `read`, `update`, `write`, or `full`. See below. |
 | `--profile <NAME>` | `Default` | Which Edge profile to read cookies from. |
 | `--check` | off | Verify the session against Atlassian, print the identity, and exit. |
 
@@ -55,11 +56,19 @@ way to tell a cookie problem apart from an MCP-client problem. Diagnostics alway
 
 ## Access levels
 
-| Level | Meaning | Status |
+Levels are cumulative: `read` ⊂ `update` ⊂ `write` ⊂ `full`. The per-endpoint
+classification the server enforces is in [docs/access-levels.md](docs/access-levels.md),
+and a test fails if that document and the code drift apart.
+
+| Level | Meaning | Tools |
 | --- | --- | --- |
-| `readonly` | Read everything the signed-in user can read, across Confluence and Jira. No writes of any kind. | **implemented** |
-| `read-update` | `readonly`, plus modifying existing content. No creates, no deletes. | refused at startup |
-| `full` | Unrestricted: create, delete, administer. | refused at startup |
+| `read` | Read everything the signed-in user can read, across Confluence and Jira. No changes of any kind. | 10 |
+| `update` | `read`, plus changing content that already exists — rewriting an issue or page, transitioning, assigning, editing a comment. **No creates, no deletes.** | 15 |
+| `write` | `update`, plus creating and deleting content — issues, pages, comments. No administration. | 21 |
+| `full` | `write`, plus administration: users and groups, permissions, project and space configuration. | 25 |
+
+A tool above the session's level is not merely refused: it is never registered, so it does
+not appear in `tools/list` at all.
 
 ## How it works
 
@@ -86,38 +95,50 @@ Scope: **Linux**, **Atlassian Cloud** (`*.atlassian.net`) only.
 No browser automation (no Playwright/Selenium): the browser is only the *source* of the
 cookie, and all Atlassian traffic is plain HTTP from this process.
 
-### 2. Read-only enforcement
+### 2. Access-level enforcement
 
-`readonly` is enforced in three independent layers, so a bug in one does not become a write:
+Each level is enforced in two independent layers, so a bug in one does not become a write:
 
-1. **Tool surface** — only read tools are registered. `TOOL_SPECS` classifies every tool
-   with the minimum level it needs, and a test fails if a registered tool is unclassified,
-   so a write tool cannot be added without deciding that it writes.
-2. **Endpoint allowlist** — every request must match a fixed `(method, path prefix)` list.
-   This is an *endpoint* allowlist rather than a verb allowlist, because Jira's JQL search
-   is a `POST` that reads:
-   - `GET /rest/api/3/myself`, `/issue/{key}`, `/issue/{key}/comment`, `/project/search`
-   - `POST /rest/api/3/search/jql` (Jira's JQL search)
-   - `GET /wiki/rest/api/search` (CQL), `/wiki/api/v2/pages[/{id}[/children|/footer-comments]]`,
-     `/wiki/api/v2/spaces`
-3. **No write code paths** — the mutating client methods and tools do not exist.
+1. **Tool surface** — every tool declares the minimum level it needs in `TOOL_SPECS`, and
+   tools above the session's level are disabled in the MCP router: absent from
+   `tools/list`, and rejected if called by name anyway. A test fails if a registered tool
+   is unclassified.
+2. **Endpoint policy** — every request is matched against a table of
+   `(method, path pattern, required level)`. Matching is by whole path segments, never by
+   prefix, so `/rest/api/3/issue/{}` does not authorise
+   `/rest/api/3/issue/ABC-1/transitions`. Anything not in the table is refused at every
+   level, and a small `never` list is checked first.
+
+A refusal names the level that would be needed:
+
+```
+blocked: POST /rest/api/3/issue requires access level 'write' or higher; this session is 'read'
+```
+
+A test ties each tool to the policy row for the endpoint it calls, so a tool cannot claim
+`update` while using a `write` endpoint.
 
 Tool arguments are percent-encoded into single path segments, so no argument can escape the
 endpoint it belongs to.
 
 ### 3. Tool surface
 
-| Product | Tools |
+| Level | Tools |
 | --- | --- |
-| Identity | `get_myself` |
-| Jira | `search_issues` (JQL, returns a `next_page_token`), `get_issue`, `list_projects`, `get_issue_comments` |
-| Confluence | `search_pages` (CQL), `get_page` (body in storage format), `list_spaces`, `get_page_children`, `list_page_comments` |
+| `read` | `get_myself`, `search_issues` (JQL), `get_issue`, `list_projects`, `get_issue_comments`, `search_pages` (CQL), `get_page`, `list_spaces`, `get_page_children`, `list_page_comments` |
+| `update` | `update_issue`, `transition_issue`, `assign_issue`, `update_comment`, `update_page` |
+| `write` | `create_issue`, `delete_issue`, `add_comment`, `delete_comment`, `create_page`, `delete_page` |
+| `full` | `create_project`, `create_space`, `add_group_member`, `remove_group_member` |
 
-Every tool is annotated `readOnlyHint: true` so MCP clients can render it accordingly.
+Read tools are annotated `readOnlyHint: true`, deletions `destructiveHint: true`.
+
+Jira Cloud takes rich text as [ADF](https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/);
+so that an agent can just send prose, a plain string is wrapped as a single paragraph, and
+an object is passed through as ADF.
 
 ## Non-goals
 
-- Any write operation while running as `readonly`.
+- Any change to your data while running as `read`.
 - API tokens, personal access tokens, or OAuth app registration.
 - Driving a browser to obtain or refresh the session.
 - Listening on a network port — the transport is local `stdio`.
@@ -127,6 +148,8 @@ Every tool is annotated `readOnlyHint: true` so MCP clients can render it accord
 
 - A session cookie is a bearer credential equivalent to your logged-in browser. Anyone who
   reads it can act as you until it expires.
+- `--level update`, `write` or `full` means the agent can change real data. `read` is the
+  default precisely so that has to be a deliberate choice.
 - `--site` must be an `*.atlassian.net` host. That check is what stops the cookie from being
   sent somewhere else; it is deliberately not overridable.
 - The server is local-only and speaks MCP over `stdio` to a single client process.
@@ -152,8 +175,9 @@ cargo run -- --site https://<your-org>.atlassian.net --check
 
 The test suite needs neither Edge nor an Atlassian account: it writes a synthetic,
 Chromium-shaped cookie database (including the real `SHA256(host_key)` value prefix), checks
-decryption round-trips and known-answer vectors for the key derivation, and drives the real
-binary over stdio through a full MCP handshake.
+decryption round-trips and known-answer vectors for the key derivation, drives the real
+binary over stdio through a full MCP handshake at every access level, and compares the
+enforced endpoint policy against [docs/access-levels.md](docs/access-levels.md) row by row.
 
 ## Decisions
 
@@ -162,12 +186,18 @@ binary over stdio through a full MCP handshake.
 2. **Deployment** — Atlassian Cloud only. Data Center/Server (`JSESSIONID`) is out of scope.
 3. **Base URL** — passed explicitly via `--site`; never auto-detected from the Edge profile.
 4. **MCP SDK** — the official `rmcp` crate, with `stdio` as the only transport.
-5. **Access levels** — `readonly` is implemented and is the default; the other levels fail
-   closed until they are built.
+5. **Access levels** — four cumulative levels, `read` by default. The endpoint policy lives
+   in [docs/access-levels.md](docs/access-levels.md) and `src/policy/data.rs`; `read`,
+   `update`, `write` and `full` all ship tools.
+6. **Endpoint matching** — whole path segments with `{}` for one segment, never prefixes, so
+   an allowlisted parent cannot imply its sub-resources.
 
 ## Open questions
 
-1. **`read-update` semantics** — is "modify existing content, no create/delete" the right
-   middle tier, or should it be defined differently?
+1. **`update` vs `write` split** — `update` changes existing content but cannot create or
+   delete; `write` adds and removes entries. Two consequences worth a second look: creating
+   a comment is `write` while editing one is `update`, and Jira transitions are `update`
+   even though workflow post-functions can create sub-tasks. See
+   [docs/access-levels.md](docs/access-levels.md).
 2. **Write-path safeguards** — for the levels that write, should every write require an
    explicit per-call confirmation, and if so, in what form?

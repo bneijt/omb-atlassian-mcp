@@ -47,15 +47,26 @@ pub enum Error {
     )]
     SessionExpired { host: String, expired_at: String },
 
-    #[error("access level {0} is not implemented yet; only 'readonly' is available")]
-    UnimplementedLevel(AccessLevel),
-
-    #[error("blocked by access level '{level}': {method} {path} is not on the allowlist")]
+    #[error("blocked: {method} {path} is not on the allowlist for access level '{level}'")]
     Blocked {
         level: AccessLevel,
         method: String,
         path: String,
     },
+
+    #[error(
+        "blocked: {method} {path} requires access level '{required}' or higher; \
+         this session is '{session}'"
+    )]
+    RequiresLevel {
+        session: AccessLevel,
+        required: AccessLevel,
+        method: String,
+        path: String,
+    },
+
+    #[error("blocked: {method} {path} is permanently disabled, at every access level")]
+    Forbidden { method: String, path: String },
 
     #[error("{method} {url} failed: HTTP {status}: {body}")]
     Api {
