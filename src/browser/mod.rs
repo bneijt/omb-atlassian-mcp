@@ -112,10 +112,10 @@ async fn platform_credentials() -> Result<(Credentials, String)> {
     };
     match windows::credentials(&local_state) {
         Ok(pair) => Ok(pair),
-        Err(reason) => Ok((
-            Credentials::Unavailable(reason.clone()),
-            format!("Local State unusable: {reason}"),
-        )),
+        Err(reason) => {
+            let key_source = format!("Local State unusable: {reason}");
+            Ok((Credentials::Unavailable(reason), key_source))
+        }
     }
 }
 

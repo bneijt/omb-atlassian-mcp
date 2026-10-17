@@ -149,7 +149,11 @@ host, so most of the logic is covered on a Linux development machine. Two things
 run on their own platform:
 
 - the DPAPI FFI, type-checked against `windows-sys` 0.61 but only *executed* by the Windows
-  CI job, which round-trips a value through `CryptProtectData` / `CryptUnprotectData`;
+  CI job, which round-trips a value through `CryptProtectData` / `CryptUnprotectData`.
+  It cannot even be linked on Linux, so a local `cargo clippy` never sees it: when
+  changing it, mirror the two functions into a scratch crate that depends on `windows-sys`
+  and run `cargo clippy -- -D warnings` there. That catches type and lint errors without
+  waiting for CI;
 - the macOS Keychain read, exercised only by the macOS CI job (the unit test that would
   touch the real Keychain is skipped there).
 

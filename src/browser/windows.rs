@@ -73,12 +73,17 @@ pub fn decrypt_legacy(blob: &[u8], host_key: &str) -> Result<String, String> {
 }
 
 /// Unwrap a DPAPI blob with the current user's master key.
+///
+/// This block only compiles on Windows, so a Linux `cargo clippy` never sees it. When
+/// changing it, mirror it into a scratch crate (see the plan in
+/// `docs/platform-support.md`) and run `cargo clippy -- -D warnings` there, or CI's
+/// Windows job is the first thing to find the problem.
 #[cfg(windows)]
 fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptUnprotectData};
 
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: blob.len() as u32,
         pbData: blob.as_ptr() as *mut u8,
     };
@@ -89,7 +94,7 @@ fn dpapi_unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
 
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &input,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -190,7 +195,7 @@ mod tests {
         use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CryptProtectData};
 
         let secret = b"omb-atlassian-mcp";
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: secret.len() as u32,
             pbData: secret.as_ptr() as *mut u8,
         };
@@ -200,7 +205,7 @@ mod tests {
         };
         let ok = unsafe {
             CryptProtectData(
-                &mut input,
+                &input,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
