@@ -314,7 +314,7 @@ fn listed_tool_names(server: &mut Harness) -> Vec<String> {
 #[test]
 fn each_access_level_exposes_a_different_tool_surface() {
     let profile = profile_dir();
-    for (level, expected) in [("read", 10), ("update", 15), ("write", 21), ("full", 25)] {
+    for (level, expected) in [("read", 10), ("update", 22), ("write", 33), ("full", 37)] {
         let mut server = Harness::start(profile.path(), &["--access-level", level]);
         server.initialize();
         let names = listed_tool_names(&mut server);
@@ -335,10 +335,14 @@ fn each_access_level_exposes_a_different_tool_surface() {
             }
             "update" => {
                 assert!(has("update_issue"));
+                assert!(has("update_sprint"));
                 assert!(!has("create_issue"));
+                assert!(!has("create_sprint"));
             }
             "write" => {
                 assert!(has("create_issue"));
+                assert!(has("create_sprint"));
+                assert!(has("upload_attachment"));
                 assert!(!has("create_project"));
             }
             "full" => {

@@ -386,18 +386,21 @@ can never be called by this server.
 - **Permanent purge of Confluence content.** Only v2 trash is available; the
   irreversible purge lives behind the v1 content endpoint, which this policy does not
   include.
-- **Attachment upload for Jira is allowlisted but has no tool yet**; the same for most
-  of the `full` surface. The policy is the security boundary; tools cover the
-  operations the agent actually gets.
+- **Binary attachment uploads.** The upload tool takes the file contents inline as
+  text, never a path. The server has no way to read a local file, so a tool cannot be
+  turned into a file-exfiltration primitive.
+- **Jira attachment upload** is allowlisted but has no tool yet, as are most of the
+  `full` endpoints. The policy is the security boundary; tools cover the operations
+  the agent actually gets.
 
 ## What `--access-level` actually gives you
 
-| Level | Tools the agent sees |
-| --- | --- |
-| `read` | the 10 read tools |
-| `update` | + `update_issue`, `transition_issue`, `assign_issue`, `update_comment`, `update_page` |
-| `write` | + `create_issue`, `delete_issue`, `add_comment`, `delete_comment`, `create_page`, `delete_page` |
-| `full` | + `create_project`, `create_space`, `add_group_member`, `remove_group_member` |
+| Level | Tools the agent sees | Total |
+| --- | --- | --- |
+| `read` | `get_myself`, `search_issues`, `get_issue`, `list_projects`, `get_issue_comments`, `search_pages`, `get_page`, `list_spaces`, `get_page_children`, `list_page_comments` | 10 |
+| `update` | + `update_issue`, `transition_issue`, `assign_issue`, `update_comment`, `update_page`, `update_sprint`, `add_issues_to_sprint`, `move_issues_to_backlog`, `rank_issue`, `add_page_label`, `remove_page_label`, `update_page_property` | 22 |
+| `write` | + `create_issue`, `delete_issue`, `add_comment`, `delete_comment`, `create_page`, `delete_page`, `create_sprint`, `delete_sprint`, `upload_attachment`, `add_page_property`, `delete_page_property` | 33 |
+| `full` | + `create_project`, `create_space`, `add_group_member`, `remove_group_member` | 37 |
 
 ## Verification
 

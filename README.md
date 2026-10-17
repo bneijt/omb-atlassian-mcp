@@ -63,9 +63,9 @@ and a test fails if that document and the code drift apart.
 | Level | Meaning | Tools |
 | --- | --- | --- |
 | `read` | Read everything the signed-in user can read, across Confluence and Jira. No changes of any kind. | 10 |
-| `update` | `read`, plus changing content that already exists — rewriting an issue or page, transitioning, assigning, editing a comment. **No creates, no deletes.** | 15 |
-| `write` | `update`, plus creating and deleting content — issues, pages, comments. No administration. | 21 |
-| `full` | `write`, plus administration: users and groups, permissions, project and space configuration. | 25 |
+| `update` | `read`, plus changing content that already exists — rewriting an issue or page, transitioning, assigning, editing a comment, moving and ranking issues, labels, page properties. **No creates, no deletes.** | 22 |
+| `write` | `update`, plus creating and deleting content — issues, pages, comments, sprints, attachments. No administration. | 33 |
+| `full` | `write`, plus administration: users and groups, permissions, project and space configuration. | 37 |
 
 A tool above the session's level is not merely refused: it is never registered, so it does
 not appear in `tools/list` at all.
@@ -126,11 +126,15 @@ endpoint it belongs to.
 | Level | Tools |
 | --- | --- |
 | `read` | `get_myself`, `search_issues` (JQL), `get_issue`, `list_projects`, `get_issue_comments`, `search_pages` (CQL), `get_page`, `list_spaces`, `get_page_children`, `list_page_comments` |
-| `update` | `update_issue`, `transition_issue`, `assign_issue`, `update_comment`, `update_page` |
-| `write` | `create_issue`, `delete_issue`, `add_comment`, `delete_comment`, `create_page`, `delete_page` |
+| `update` | `update_issue`, `transition_issue`, `assign_issue`, `update_comment`, `update_page`, `update_sprint`, `add_issues_to_sprint`, `move_issues_to_backlog`, `rank_issue`, `add_page_label`, `remove_page_label`, `update_page_property` |
+| `write` | `create_issue`, `delete_issue`, `add_comment`, `delete_comment`, `create_page`, `delete_page`, `create_sprint`, `delete_sprint`, `upload_attachment`, `add_page_property`, `delete_page_property` |
 | `full` | `create_project`, `create_space`, `add_group_member`, `remove_group_member` |
 
 Read tools are annotated `readOnlyHint: true`, deletions `destructiveHint: true`.
+
+`upload_attachment` takes the file contents **inline as text**, never a path: the server has
+no way to read a local file, so a tool cannot become a file-exfiltration primitive. Binary
+uploads are not exposed.
 
 Jira Cloud takes rich text as [ADF](https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/);
 so that an agent can just send prose, a plain string is wrapped as a single paragraph, and

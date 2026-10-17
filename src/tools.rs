@@ -40,161 +40,229 @@ pub struct ToolSpec {
 }
 
 /// Every tool the server can register, with its minimum level.
+/// Shorthand that keeps the table below readable.
+const fn spec(
+    name: &'static str,
+    min_level: AccessLevel,
+    method: &'static str,
+    path: &'static str,
+) -> ToolSpec {
+    ToolSpec {
+        name,
+        min_level,
+        method,
+        path,
+    }
+}
+
+/// Every tool the server can register, with its minimum level.
 pub const TOOL_SPECS: &[ToolSpec] = &[
     // ----- read -----
-    ToolSpec {
-        name: "get_myself",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: JIRA_MYSELF,
-    },
-    ToolSpec {
-        name: "search_issues",
-        min_level: AccessLevel::Read,
-        method: "POST",
-        path: JIRA_SEARCH_JQL,
-    },
-    ToolSpec {
-        name: "get_issue",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: "/rest/api/3/issue/{}",
-    },
-    ToolSpec {
-        name: "list_projects",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: JIRA_PROJECT_SEARCH,
-    },
-    ToolSpec {
-        name: "get_issue_comments",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: "/rest/api/3/issue/{}/comment",
-    },
-    ToolSpec {
-        name: "search_pages",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: CONFLUENCE_SEARCH,
-    },
-    ToolSpec {
-        name: "get_page",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: "/wiki/api/v2/pages/{}",
-    },
-    ToolSpec {
-        name: "list_spaces",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: CONFLUENCE_SPACES,
-    },
-    ToolSpec {
-        name: "get_page_children",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: "/wiki/api/v2/pages/{}/children",
-    },
-    ToolSpec {
-        name: "list_page_comments",
-        min_level: AccessLevel::Read,
-        method: "GET",
-        path: "/wiki/api/v2/pages/{}/footer-comments",
-    },
+    spec("get_myself", AccessLevel::Read, "GET", JIRA_MYSELF),
+    spec("search_issues", AccessLevel::Read, "POST", JIRA_SEARCH_JQL),
+    spec(
+        "get_issue",
+        AccessLevel::Read,
+        "GET",
+        "/rest/api/3/issue/{}",
+    ),
+    spec(
+        "list_projects",
+        AccessLevel::Read,
+        "GET",
+        JIRA_PROJECT_SEARCH,
+    ),
+    spec(
+        "get_issue_comments",
+        AccessLevel::Read,
+        "GET",
+        "/rest/api/3/issue/{}/comment",
+    ),
+    spec("search_pages", AccessLevel::Read, "GET", CONFLUENCE_SEARCH),
+    spec(
+        "get_page",
+        AccessLevel::Read,
+        "GET",
+        "/wiki/api/v2/pages/{}",
+    ),
+    spec("list_spaces", AccessLevel::Read, "GET", CONFLUENCE_SPACES),
+    spec(
+        "get_page_children",
+        AccessLevel::Read,
+        "GET",
+        "/wiki/api/v2/pages/{}/children",
+    ),
+    spec(
+        "list_page_comments",
+        AccessLevel::Read,
+        "GET",
+        "/wiki/api/v2/pages/{}/footer-comments",
+    ),
     // ----- update -----
-    ToolSpec {
-        name: "update_issue",
-        min_level: AccessLevel::Update,
-        method: "PUT",
-        path: "/rest/api/3/issue/{}",
-    },
-    ToolSpec {
-        name: "transition_issue",
-        min_level: AccessLevel::Update,
-        method: "POST",
-        path: "/rest/api/3/issue/{}/transitions",
-    },
-    ToolSpec {
-        name: "assign_issue",
-        min_level: AccessLevel::Update,
-        method: "PUT",
-        path: "/rest/api/3/issue/{}/assignee",
-    },
-    ToolSpec {
-        name: "update_comment",
-        min_level: AccessLevel::Update,
-        method: "PUT",
-        path: "/rest/api/3/issue/{}/comment/{}",
-    },
-    ToolSpec {
-        name: "update_page",
-        min_level: AccessLevel::Update,
-        method: "PUT",
-        path: "/wiki/api/v2/pages/{}",
-    },
+    spec(
+        "update_issue",
+        AccessLevel::Update,
+        "PUT",
+        "/rest/api/3/issue/{}",
+    ),
+    spec(
+        "transition_issue",
+        AccessLevel::Update,
+        "POST",
+        "/rest/api/3/issue/{}/transitions",
+    ),
+    spec(
+        "assign_issue",
+        AccessLevel::Update,
+        "PUT",
+        "/rest/api/3/issue/{}/assignee",
+    ),
+    spec(
+        "update_comment",
+        AccessLevel::Update,
+        "PUT",
+        "/rest/api/3/issue/{}/comment/{}",
+    ),
+    spec(
+        "update_page",
+        AccessLevel::Update,
+        "PUT",
+        "/wiki/api/v2/pages/{}",
+    ),
+    spec(
+        "update_sprint",
+        AccessLevel::Update,
+        "PUT",
+        "/rest/agile/1.0/sprint/{}",
+    ),
+    spec(
+        "add_issues_to_sprint",
+        AccessLevel::Update,
+        "POST",
+        "/rest/agile/1.0/sprint/{}/issue",
+    ),
+    spec(
+        "move_issues_to_backlog",
+        AccessLevel::Update,
+        "POST",
+        "/rest/agile/1.0/backlog/issue",
+    ),
+    spec(
+        "rank_issue",
+        AccessLevel::Update,
+        "PUT",
+        "/rest/agile/1.0/issue/rank",
+    ),
+    spec(
+        "add_page_label",
+        AccessLevel::Update,
+        "POST",
+        "/wiki/rest/api/content/{}/label",
+    ),
+    spec(
+        "remove_page_label",
+        AccessLevel::Update,
+        "DELETE",
+        "/wiki/rest/api/content/{}/label/{}",
+    ),
+    spec(
+        "update_page_property",
+        AccessLevel::Update,
+        "PUT",
+        "/wiki/api/v2/pages/{}/properties/{}",
+    ),
     // ----- write -----
-    ToolSpec {
-        name: "create_issue",
-        min_level: AccessLevel::Write,
-        method: "POST",
-        path: "/rest/api/3/issue",
-    },
-    ToolSpec {
-        name: "delete_issue",
-        min_level: AccessLevel::Write,
-        method: "DELETE",
-        path: "/rest/api/3/issue/{}",
-    },
-    ToolSpec {
-        name: "add_comment",
-        min_level: AccessLevel::Write,
-        method: "POST",
-        path: "/rest/api/3/issue/{}/comment",
-    },
-    ToolSpec {
-        name: "delete_comment",
-        min_level: AccessLevel::Write,
-        method: "DELETE",
-        path: "/rest/api/3/issue/{}/comment/{}",
-    },
-    ToolSpec {
-        name: "create_page",
-        min_level: AccessLevel::Write,
-        method: "POST",
-        path: "/wiki/api/v2/pages",
-    },
-    ToolSpec {
-        name: "delete_page",
-        min_level: AccessLevel::Write,
-        method: "DELETE",
-        path: "/wiki/api/v2/pages/{}",
-    },
+    spec(
+        "create_issue",
+        AccessLevel::Write,
+        "POST",
+        "/rest/api/3/issue",
+    ),
+    spec(
+        "delete_issue",
+        AccessLevel::Write,
+        "DELETE",
+        "/rest/api/3/issue/{}",
+    ),
+    spec(
+        "add_comment",
+        AccessLevel::Write,
+        "POST",
+        "/rest/api/3/issue/{}/comment",
+    ),
+    spec(
+        "delete_comment",
+        AccessLevel::Write,
+        "DELETE",
+        "/rest/api/3/issue/{}/comment/{}",
+    ),
+    spec(
+        "create_page",
+        AccessLevel::Write,
+        "POST",
+        "/wiki/api/v2/pages",
+    ),
+    spec(
+        "delete_page",
+        AccessLevel::Write,
+        "DELETE",
+        "/wiki/api/v2/pages/{}",
+    ),
+    spec(
+        "create_sprint",
+        AccessLevel::Write,
+        "POST",
+        "/rest/agile/1.0/sprint",
+    ),
+    spec(
+        "delete_sprint",
+        AccessLevel::Write,
+        "DELETE",
+        "/rest/agile/1.0/sprint/{}",
+    ),
+    spec(
+        "upload_attachment",
+        AccessLevel::Write,
+        "POST",
+        "/wiki/rest/api/content/{}/child/attachment",
+    ),
+    spec(
+        "add_page_property",
+        AccessLevel::Write,
+        "POST",
+        "/wiki/api/v2/pages/{}/properties",
+    ),
+    spec(
+        "delete_page_property",
+        AccessLevel::Write,
+        "DELETE",
+        "/wiki/api/v2/pages/{}/properties/{}",
+    ),
     // ----- full -----
-    ToolSpec {
-        name: "create_project",
-        min_level: AccessLevel::Full,
-        method: "POST",
-        path: "/rest/api/3/project",
-    },
-    ToolSpec {
-        name: "create_space",
-        min_level: AccessLevel::Full,
-        method: "POST",
-        path: "/wiki/api/v2/spaces",
-    },
-    ToolSpec {
-        name: "add_group_member",
-        min_level: AccessLevel::Full,
-        method: "POST",
-        path: "/rest/api/3/group/user",
-    },
-    ToolSpec {
-        name: "remove_group_member",
-        min_level: AccessLevel::Full,
-        method: "DELETE",
-        path: "/rest/api/3/group/user",
-    },
+    spec(
+        "create_project",
+        AccessLevel::Full,
+        "POST",
+        "/rest/api/3/project",
+    ),
+    spec(
+        "create_space",
+        AccessLevel::Full,
+        "POST",
+        "/wiki/api/v2/spaces",
+    ),
+    spec(
+        "add_group_member",
+        AccessLevel::Full,
+        "POST",
+        "/rest/api/3/group/user",
+    ),
+    spec(
+        "remove_group_member",
+        AccessLevel::Full,
+        "DELETE",
+        "/rest/api/3/group/user",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -458,6 +526,153 @@ pub struct GroupMemberArgs {
     pub group_id: String,
     /// Atlassian account id of the user.
     pub account_id: String,
+}
+
+/// Arguments for `create_sprint`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CreateSprintArgs {
+    /// Id of the board the sprint belongs to.
+    pub board_id: u64,
+    /// Sprint name.
+    pub name: String,
+    /// Optional start date, ISO-8601, e.g. `2025-01-06T09:00:00.000Z`.
+    #[serde(default)]
+    pub start_date: Option<String>,
+    /// Optional end date, ISO-8601.
+    #[serde(default)]
+    pub end_date: Option<String>,
+    /// Optional sprint goal.
+    #[serde(default)]
+    pub goal: Option<String>,
+}
+
+/// Arguments for `update_sprint`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct UpdateSprintArgs {
+    /// Sprint id.
+    pub sprint_id: u64,
+    /// New name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// New state: `future`, `active` or `closed`.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// New start date, ISO-8601.
+    #[serde(default)]
+    pub start_date: Option<String>,
+    /// New end date, ISO-8601.
+    #[serde(default)]
+    pub end_date: Option<String>,
+    /// New sprint goal.
+    #[serde(default)]
+    pub goal: Option<String>,
+}
+
+/// Arguments for `delete_sprint`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DeleteSprintArgs {
+    /// Sprint id.
+    pub sprint_id: u64,
+}
+
+/// Arguments for `add_issues_to_sprint`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AddIssuesToSprintArgs {
+    /// Sprint id.
+    pub sprint_id: u64,
+    /// Issue keys or ids to move into the sprint, e.g. `["ABC-1", "ABC-2"]`.
+    pub issues: Vec<String>,
+    /// Rank the moved issues before this issue.
+    #[serde(default)]
+    pub rank_before_issue: Option<String>,
+    /// Rank the moved issues after this issue.
+    #[serde(default)]
+    pub rank_after_issue: Option<String>,
+}
+
+/// Arguments for `move_issues_to_backlog`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MoveIssuesToBacklogArgs {
+    /// Issue keys or ids to move to the backlog.
+    pub issues: Vec<String>,
+}
+
+/// Arguments for `rank_issue`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct RankIssueArgs {
+    /// Issue keys or ids to rank.
+    pub issues: Vec<String>,
+    /// Rank the issues before this one.
+    #[serde(default)]
+    pub rank_before_issue: Option<String>,
+    /// Rank the issues after this one.
+    #[serde(default)]
+    pub rank_after_issue: Option<String>,
+}
+
+/// Arguments for `add_page_label`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AddPageLabelArgs {
+    /// Confluence content (page) id.
+    pub page_id: String,
+    /// Label names to add.
+    pub labels: Vec<String>,
+}
+
+/// Arguments for `remove_page_label`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct RemovePageLabelArgs {
+    /// Confluence content (page) id.
+    pub page_id: String,
+    /// Label name to remove.
+    pub label: String,
+}
+
+/// Arguments for `add_page_property`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AddPagePropertyArgs {
+    /// Confluence page id.
+    pub page_id: String,
+    /// Property key.
+    pub key: String,
+    /// Property value (any JSON).
+    pub value: Value,
+}
+
+/// Arguments for `update_page_property`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct UpdatePagePropertyArgs {
+    /// Confluence page id.
+    pub page_id: String,
+    /// Property id (not the key).
+    pub property_id: String,
+    /// New property value (any JSON).
+    pub value: Value,
+    /// The property's current version number plus one.
+    pub version: u64,
+}
+
+/// Arguments for `delete_page_property`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DeletePagePropertyArgs {
+    /// Confluence page id.
+    pub page_id: String,
+    /// Property id (not the key).
+    pub property_id: String,
+}
+
+/// Arguments for `upload_attachment`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct UploadAttachmentArgs {
+    /// Confluence content (page) id to attach the file to.
+    pub page_id: String,
+    /// File name to give the attachment, e.g. `notes.md`.
+    pub filename: String,
+    /// File contents as text. Binary uploads are not exposed.
+    pub content: String,
+    /// Optional comment on the attachment.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +1062,166 @@ impl AtlassianServer {
         Self::render(self.client.put_json(&path, &body).await)
     }
 
+    /// Edit an existing sprint.
+    #[tool(
+        name = "update_sprint",
+        annotations(read_only_hint = false),
+        description = "Edit an existing sprint: name, state (future/active/closed), dates or goal. \
+                       Cannot create or delete sprints."
+    )]
+    pub async fn update_sprint(
+        &self,
+        Parameters(args): Parameters<UpdateSprintArgs>,
+    ) -> CallToolResult {
+        let mut body = json!({});
+        if let Some(name) = args.name {
+            body["name"] = json!(name);
+        }
+        if let Some(state) = args.state {
+            body["state"] = json!(state);
+        }
+        if let Some(start) = args.start_date {
+            body["startDate"] = json!(start);
+        }
+        if let Some(end) = args.end_date {
+            body["endDate"] = json!(end);
+        }
+        if let Some(goal) = args.goal {
+            body["goal"] = json!(goal);
+        }
+        if body.as_object().is_some_and(|object| object.is_empty()) {
+            return Self::fail("provide at least one of name, state, start_date, end_date or goal");
+        }
+        let path = format!("/rest/agile/1.0/sprint/{}", args.sprint_id);
+        Self::render(self.client.put_json(&path, &body).await)
+    }
+
+    /// Move existing issues into a sprint.
+    #[tool(
+        name = "add_issues_to_sprint",
+        annotations(read_only_hint = false),
+        description = "Move existing issues into a sprint, optionally ranking them relative to another \
+                       issue."
+    )]
+    pub async fn add_issues_to_sprint(
+        &self,
+        Parameters(args): Parameters<AddIssuesToSprintArgs>,
+    ) -> CallToolResult {
+        let path = format!("/rest/agile/1.0/sprint/{}/issue", args.sprint_id);
+        let mut body = json!({ "issues": args.issues });
+        if let Some(before) = args.rank_before_issue {
+            body["rankBeforeIssue"] = json!(before);
+        }
+        if let Some(after) = args.rank_after_issue {
+            body["rankAfterIssue"] = json!(after);
+        }
+        Self::render(self.client.post_json(&path, &body).await)
+    }
+
+    /// Move existing issues to the backlog.
+    #[tool(
+        name = "move_issues_to_backlog",
+        annotations(read_only_hint = false),
+        description = "Move existing issues out of their sprint and into the backlog."
+    )]
+    pub async fn move_issues_to_backlog(
+        &self,
+        Parameters(args): Parameters<MoveIssuesToBacklogArgs>,
+    ) -> CallToolResult {
+        let body = json!({ "issues": args.issues });
+        Self::render(
+            self.client
+                .post_json("/rest/agile/1.0/backlog/issue", &body)
+                .await,
+        )
+    }
+
+    /// Rank existing issues.
+    #[tool(
+        name = "rank_issue",
+        annotations(read_only_hint = false),
+        description = "Rank existing issues relative to another issue, using `rank_before_issue` or \
+                       `rank_after_issue`."
+    )]
+    pub async fn rank_issue(&self, Parameters(args): Parameters<RankIssueArgs>) -> CallToolResult {
+        let mut body = json!({ "issues": args.issues });
+        match (args.rank_before_issue, args.rank_after_issue) {
+            (Some(before), _) => body["rankBeforeIssue"] = json!(before),
+            (None, Some(after)) => body["rankAfterIssue"] = json!(after),
+            (None, None) => {
+                return Self::fail("provide rank_before_issue or rank_after_issue");
+            }
+        }
+        Self::render(
+            self.client
+                .put_json("/rest/agile/1.0/issue/rank", &body)
+                .await,
+        )
+    }
+
+    /// Add labels to a Confluence page.
+    #[tool(
+        name = "add_page_label",
+        annotations(read_only_hint = false),
+        description = "Add one or more labels to an existing Confluence page."
+    )]
+    pub async fn add_page_label(
+        &self,
+        Parameters(args): Parameters<AddPageLabelArgs>,
+    ) -> CallToolResult {
+        let path = format!(
+            "/wiki/rest/api/content/{}/label",
+            path_segment(&args.page_id)
+        );
+        let labels: Vec<Value> = args
+            .labels
+            .iter()
+            .map(|name| json!({ "prefix": "global", "name": name }))
+            .collect();
+        Self::render(self.client.post_json(&path, &json!(labels)).await)
+    }
+
+    /// Remove a label from a Confluence page.
+    #[tool(
+        name = "remove_page_label",
+        annotations(read_only_hint = false),
+        description = "Remove a label from an existing Confluence page."
+    )]
+    pub async fn remove_page_label(
+        &self,
+        Parameters(args): Parameters<RemovePageLabelArgs>,
+    ) -> CallToolResult {
+        let path = format!(
+            "/wiki/rest/api/content/{}/label/{}",
+            path_segment(&args.page_id),
+            path_segment(&args.label)
+        );
+        Self::render(self.client.delete_json(&path, &[]).await)
+    }
+
+    /// Update an existing page property.
+    #[tool(
+        name = "update_page_property",
+        annotations(read_only_hint = false),
+        description = "Update an existing Confluence page property. Needs the property id and its \
+                       current version number plus one."
+    )]
+    pub async fn update_page_property(
+        &self,
+        Parameters(args): Parameters<UpdatePagePropertyArgs>,
+    ) -> CallToolResult {
+        if args.version == 0 {
+            return Self::fail("version must be the property's current version number plus one");
+        }
+        let path = format!(
+            "/wiki/api/v2/pages/{}/properties/{}",
+            path_segment(&args.page_id),
+            path_segment(&args.property_id)
+        );
+        let body = json!({ "value": args.value, "version": { "number": args.version } });
+        Self::render(self.client.put_json(&path, &body).await)
+    }
+
     // ------------------------------ write ------------------------------
 
     /// Create a new Jira issue.
@@ -966,6 +1341,105 @@ impl AtlassianServer {
         Parameters(args): Parameters<DeletePageArgs>,
     ) -> CallToolResult {
         let path = format!("{CONFLUENCE_PAGES}/{}", path_segment(&args.page_id));
+        Self::render(self.client.delete_json(&path, &[]).await)
+    }
+
+    /// Create a sprint on a board.
+    #[tool(
+        name = "create_sprint",
+        annotations(read_only_hint = false),
+        description = "Create a new sprint on a board. Requires write access."
+    )]
+    pub async fn create_sprint(
+        &self,
+        Parameters(args): Parameters<CreateSprintArgs>,
+    ) -> CallToolResult {
+        let mut body = json!({
+            "originBoardId": args.board_id,
+            "name": args.name,
+        });
+        if let Some(start) = args.start_date {
+            body["startDate"] = json!(start);
+        }
+        if let Some(end) = args.end_date {
+            body["endDate"] = json!(end);
+        }
+        if let Some(goal) = args.goal {
+            body["goal"] = json!(goal);
+        }
+        Self::render(self.client.post_json("/rest/agile/1.0/sprint", &body).await)
+    }
+
+    /// Delete a sprint.
+    #[tool(
+        name = "delete_sprint",
+        annotations(read_only_hint = false, destructive_hint = true),
+        description = "Delete a sprint. Issues in it are not deleted, but the sprint itself is gone \
+                       and this cannot be undone."
+    )]
+    pub async fn delete_sprint(
+        &self,
+        Parameters(args): Parameters<DeleteSprintArgs>,
+    ) -> CallToolResult {
+        let path = format!("/rest/agile/1.0/sprint/{}", args.sprint_id);
+        Self::render(self.client.delete_json(&path, &[]).await)
+    }
+
+    /// Upload a text attachment to a Confluence page.
+    #[tool(
+        name = "upload_attachment",
+        annotations(read_only_hint = false),
+        description = "Attach a text file to an existing Confluence page. The contents are passed \
+                       inline; this tool cannot read files from disk."
+    )]
+    pub async fn upload_attachment(
+        &self,
+        Parameters(args): Parameters<UploadAttachmentArgs>,
+    ) -> CallToolResult {
+        let path = format!(
+            "/wiki/rest/api/content/{}/child/attachment",
+            path_segment(&args.page_id)
+        );
+        Self::render(
+            self.client
+                .upload_text_attachment(&path, &args.filename, args.content, args.comment)
+                .await,
+        )
+    }
+
+    /// Create a new page property.
+    #[tool(
+        name = "add_page_property",
+        annotations(read_only_hint = false),
+        description = "Create a new property on an existing Confluence page. Requires write access."
+    )]
+    pub async fn add_page_property(
+        &self,
+        Parameters(args): Parameters<AddPagePropertyArgs>,
+    ) -> CallToolResult {
+        let path = format!(
+            "/wiki/api/v2/pages/{}/properties",
+            path_segment(&args.page_id)
+        );
+        let body = json!({ "key": args.key, "value": args.value });
+        Self::render(self.client.post_json(&path, &body).await)
+    }
+
+    /// Delete a page property.
+    #[tool(
+        name = "delete_page_property",
+        annotations(read_only_hint = false, destructive_hint = true),
+        description = "Delete a property from a Confluence page. This cannot be undone."
+    )]
+    pub async fn delete_page_property(
+        &self,
+        Parameters(args): Parameters<DeletePagePropertyArgs>,
+    ) -> CallToolResult {
+        let path = format!(
+            "/wiki/api/v2/pages/{}/properties/{}",
+            path_segment(&args.page_id),
+            path_segment(&args.property_id)
+        );
         Self::render(self.client.delete_json(&path, &[]).await)
     }
 
@@ -1143,9 +1617,9 @@ mod tests {
     fn tool_visibility_follows_the_level() {
         for (level, count) in [
             (AccessLevel::Read, 10),
-            (AccessLevel::Update, 15),
-            (AccessLevel::Write, 21),
-            (AccessLevel::Full, 25),
+            (AccessLevel::Update, 22),
+            (AccessLevel::Write, 33),
+            (AccessLevel::Full, 37),
         ] {
             let visible = server_at(level).visible_tool_names();
             assert_eq!(
@@ -1164,10 +1638,14 @@ mod tests {
 
         let update = server_at(AccessLevel::Update).visible_tool_names();
         assert!(update.contains(&"update_issue".to_string()));
+        assert!(update.contains(&"update_sprint".to_string()));
+        assert!(!update.contains(&"create_sprint".to_string()));
         assert!(!update.contains(&"create_issue".to_string()));
 
         let write = server_at(AccessLevel::Write).visible_tool_names();
         assert!(write.contains(&"create_issue".to_string()));
+        assert!(write.contains(&"create_sprint".to_string()));
+        assert!(write.contains(&"upload_attachment".to_string()));
         assert!(!write.contains(&"create_project".to_string()));
 
         let full = server_at(AccessLevel::Full).visible_tool_names();

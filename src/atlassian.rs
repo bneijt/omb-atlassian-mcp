@@ -267,6 +267,59 @@ impl Client {
             source,
         })?;
 
+        self.parse_response(method.as_str(), &url, response).await
+    }
+
+    /// Upload a text payload as a Confluence attachment.
+    ///
+    /// The content is supplied by the caller as a string, never as a path: this server
+    /// deliberately has no way to read an arbitrary local file, so a tool cannot be
+    /// turned into a file-exfiltration primitive.
+    pub async fn upload_text_attachment(
+        &self,
+        path: &str,
+        filename: &str,
+        content: String,
+        comment: Option<String>,
+    ) -> Result<Value> {
+        self.check_allowed("POST", path)?;
+
+        let mut form = reqwest::multipart::Form::new()
+            // The Confluence API requires `minorEdit` alongside the file part.
+            .text("minorEdit", "false")
+            .part(
+                "file",
+                reqwest::multipart::Part::text(content).file_name(filename.to_string()),
+            );
+        if let Some(comment) = comment {
+            form = form.text("comment", comment);
+        }
+
+        let url = self.site.url_for(path);
+        let response = self
+            .http
+            .post(url.clone())
+            .header("Cookie", &self.cookie_header)
+            .header("Accept", "application/json")
+            .header("X-Atlassian-Token", "no-check")
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|source| Error::Http {
+                url: url.to_string(),
+                source,
+            })?;
+
+        self.parse_response("POST", &url, response).await
+    }
+
+    /// Turn a response into a JSON value, or into an error that says what happened.
+    async fn parse_response(
+        &self,
+        method: &str,
+        url: &Url,
+        response: reqwest::Response,
+    ) -> Result<Value> {
         let status = response.status();
         let text = response.text().await.map_err(|source| Error::Http {
             url: url.to_string(),
@@ -275,7 +328,7 @@ impl Client {
 
         if !status.is_success() {
             return Err(Error::Api {
-                method: method.as_str().to_string(),
+                method: method.to_string(),
                 url: url.to_string(),
                 status: status.as_u16(),
                 body: truncate(&text, MAX_ERROR_BODY),
@@ -285,7 +338,7 @@ impl Client {
             return Ok(Value::Null);
         }
         serde_json::from_str(&text).map_err(|e| Error::Api {
-            method: method.as_str().to_string(),
+            method: method.to_string(),
             url: url.to_string(),
             status: status.as_u16(),
             body: format!(
