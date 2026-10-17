@@ -14,6 +14,14 @@ access you have, and nothing more.
 > `--access-level`, and every endpoint the server can call is classified in
 > [docs/access-levels.md](docs/access-levels.md).
 
+## Installation
+
+```sh
+cargo install --git https://github.com/bneijt/omb-atlassian-mcp.git
+```
+
+Or download one of the [release binaries](https://github.com/bneijt/omb-atlassian-mcp/releases) to a place on your `PATH` and make it executable.
+
 ## Usage
 
 ```sh
