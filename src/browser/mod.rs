@@ -20,6 +20,16 @@ pub mod linux;
 use crate::Result;
 use std::path::PathBuf;
 
+/// The PBKDF2 iteration count this platform's key derivation uses.
+///
+/// Linux derives with 1 iteration, macOS with 1003. Tests that build a synthetic
+/// profile have to use the same count, or the server cannot decrypt what they wrote.
+pub const ITERATIONS: u32 = if cfg!(target_os = "macos") {
+    crate::decrypt::MACOS_ITERATIONS
+} else {
+    crate::decrypt::LINUX_ITERATIONS
+};
+
 /// How to decrypt this profile's cookie values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Credentials {

@@ -9,7 +9,7 @@
 //! best-effort: failure is not an error, it just means fewer candidate keys.
 
 use super::Credentials;
-use crate::decrypt::{KEYRING_FALLBACK_PASSWORDS, LINUX_ITERATIONS, derive_key};
+use crate::decrypt::{KEYRING_FALLBACK_PASSWORDS, derive_key};
 use secret_service::{EncryptionType, SecretService};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -42,10 +42,10 @@ pub async fn credentials() -> (Credentials, String) {
 pub fn keys_with(passwords: &[String]) -> Vec<[u8; 16]> {
     let mut keys: Vec<[u8; 16]> = passwords
         .iter()
-        .map(|password| derive_key(password, LINUX_ITERATIONS))
+        .map(|password| derive_key(password, super::ITERATIONS))
         .collect();
     for password in KEYRING_FALLBACK_PASSWORDS {
-        let key = derive_key(password, LINUX_ITERATIONS);
+        let key = derive_key(password, super::ITERATIONS);
         if !keys.contains(&key) {
             keys.push(key);
         }
@@ -142,17 +142,20 @@ mod tests {
     fn built_in_fallbacks_are_always_available() {
         let keys = keys_with(&[]);
         assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0], derive_key("peanuts", LINUX_ITERATIONS));
-        assert_eq!(keys[1], derive_key("", LINUX_ITERATIONS));
+        assert_eq!(keys[0], derive_key("peanuts", crate::browser::ITERATIONS));
+        assert_eq!(keys[1], derive_key("", crate::browser::ITERATIONS));
     }
 
     #[test]
     fn keyring_passwords_come_first_and_are_not_duplicated() {
         let keys = keys_with(&["keyring-secret".to_string(), "peanuts".to_string()]);
         assert_eq!(keys.len(), 3);
-        assert_eq!(keys[0], derive_key("keyring-secret", LINUX_ITERATIONS));
-        assert_eq!(keys[1], derive_key("peanuts", LINUX_ITERATIONS));
-        assert_eq!(keys[2], derive_key("", LINUX_ITERATIONS));
+        assert_eq!(
+            keys[0],
+            derive_key("keyring-secret", crate::browser::ITERATIONS)
+        );
+        assert_eq!(keys[1], derive_key("peanuts", crate::browser::ITERATIONS));
+        assert_eq!(keys[2], derive_key("", crate::browser::ITERATIONS));
     }
 
     #[test]

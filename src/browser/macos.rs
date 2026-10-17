@@ -8,7 +8,7 @@
 //! is type-checked everywhere; the real Keychain read only succeeds on macOS.
 
 use super::Credentials;
-use crate::decrypt::{KEYRING_FALLBACK_PASSWORDS, MACOS_ITERATIONS, derive_key};
+use crate::decrypt::{KEYRING_FALLBACK_PASSWORDS, derive_key};
 
 /// Keychain services to try, most likely first.
 pub const SERVICES: [&str; 3] = [
@@ -30,7 +30,7 @@ pub fn credentials() -> (Credentials, String) {
         // entry without one, so both lookups are worth a try.
         for account in [Some(ACCOUNT), None] {
             if let Some(password) = keychain_password(service, account) {
-                keys.push(derive_key(&password, MACOS_ITERATIONS));
+                keys.push(derive_key(&password, super::ITERATIONS));
                 source = format!("Keychain item {service:?}");
                 break 'services;
             }
@@ -38,7 +38,7 @@ pub fn credentials() -> (Credentials, String) {
     }
 
     for password in KEYRING_FALLBACK_PASSWORDS {
-        let key = derive_key(password, MACOS_ITERATIONS);
+        let key = derive_key(password, super::ITERATIONS);
         if !keys.contains(&key) {
             keys.push(key);
         }
@@ -101,7 +101,7 @@ mod tests {
             panic!("macOS should produce CBC keys");
         };
         assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0], derive_key("peanuts", MACOS_ITERATIONS));
+        assert_eq!(keys[0], derive_key("peanuts", crate::browser::ITERATIONS));
         assert!(source.contains("no Keychain entry"), "got: {source}");
     }
 }

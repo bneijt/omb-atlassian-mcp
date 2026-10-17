@@ -92,7 +92,8 @@ pub fn write_cookie_db(db: &Path, cookies: &[TestCookie]) {
     for cookie in cookies {
         let (value, encrypted_value) = match &cookie.encrypt_with {
             Some(password) => {
-                let key = derive_key(password, omb_atlassian_mcp::decrypt::LINUX_ITERATIONS);
+                // Must match the count the server uses on this platform.
+                let key = derive_key(password, omb_atlassian_mcp::browser::ITERATIONS);
                 let encrypted =
                     encrypt_cookie_value(&cookie.value, &cookie.host_key, &key, cookie.domain_hash);
                 (String::new(), encrypted)
@@ -244,19 +245,28 @@ pub struct Harness {
     child: Child,
     stdin: ChildStdin,
     lines: Receiver<String>,
+    /// The server's stderr, captured so a crash can explain itself.
+    stderr_path: PathBuf,
+    _stderr_dir: tempfile::TempDir,
 }
 
 impl Harness {
     /// Start the server pointed at a synthetic Edge profile (or an empty one).
     pub fn start(env: &TestEnv, extra_args: &[&str]) -> Self {
         let mut command = Command::new(BIN);
+        // Capture stderr to a file: if the server dies before answering, its own
+        // diagnostics are the only way to know why.
+        let stderr_dir = tempfile::tempdir().expect("temp dir for stderr");
+        let stderr_path = stderr_dir.path().join("stderr.log");
+        let stderr = std::fs::File::create(&stderr_path).expect("create the stderr log");
+
         command
             .arg("--site")
             .arg(SITE_URL)
             .args(extra_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::from(stderr));
         // Point the server at the platform's own configuration root.
         for (key, value) in env.vars() {
             command.env(key, value);
@@ -286,6 +296,8 @@ impl Harness {
             child,
             stdin,
             lines,
+            stderr_path,
+            _stderr_dir: stderr_dir,
         }
     }
 
@@ -303,10 +315,23 @@ impl Harness {
             }
             Err(RecvTimeoutError::Disconnected) => {
                 panic!(
-                    "the server closed stdout without answering; it most likely exited with an error"
+                    "the server closed stdout without answering. Its stderr was:\n{}",
+                    self.stderr()
                 )
             }
         }
+    }
+
+    /// The server's stderr so far. Reads twice, because the process may still be
+    /// flushing when stdout closes.
+    fn stderr(&self) -> String {
+        let read = || std::fs::read_to_string(&self.stderr_path).unwrap_or_default();
+        let first = read();
+        if !first.is_empty() {
+            return first;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        read()
     }
 
     pub fn call(&mut self, message: &Value) -> Value {

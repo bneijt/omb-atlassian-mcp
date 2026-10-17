@@ -5,9 +5,10 @@ mod common;
 use common::*;
 use omb_atlassian_mcp::Error;
 use omb_atlassian_mcp::atlassian::Site;
+use omb_atlassian_mcp::browser::ITERATIONS;
 use omb_atlassian_mcp::browser::cookie_db::{self, CHROMIUM_EPOCH_OFFSET_SECS};
 use omb_atlassian_mcp::browser::{Browser, Credentials};
-use omb_atlassian_mcp::decrypt::{KEYRING_FALLBACK_PASSWORDS, LINUX_ITERATIONS, derive_key};
+use omb_atlassian_mcp::decrypt::{KEYRING_FALLBACK_PASSWORDS, derive_key};
 use omb_atlassian_mcp::session::{self, SESSION_COOKIE_NAMES};
 use std::path::Path;
 
@@ -19,10 +20,10 @@ fn site() -> Site {
 fn keys(passwords: &[&str]) -> Credentials {
     let mut keys: Vec<[u8; 16]> = passwords
         .iter()
-        .map(|password| derive_key(password, LINUX_ITERATIONS))
+        .map(|password| derive_key(password, ITERATIONS))
         .collect();
     for password in KEYRING_FALLBACK_PASSWORDS {
-        let key = derive_key(password, LINUX_ITERATIONS);
+        let key = derive_key(password, ITERATIONS);
         if !keys.contains(&key) {
             keys.push(key);
         }
